@@ -1,6 +1,10 @@
 # GuardPulse Android TV Parental Control
 
 <p align="center">
+  <img src="docs/assets/guardpulse-logo.png" alt="GuardPulse Logo" width="400" />
+</p>
+
+<p align="center">
   <b>GuardPulse</b> is a Firebase-backed parental-control system for Android TV, with a parent phone dashboard, TV-side foreground PIN wall enforcement, daily limits, tamper alerts, and optional Device Owner hardening.
 </p>
 
@@ -15,26 +19,26 @@
 
 ---
 
-## 🧭 Quick Navigation
+## Quick Navigation
 
-- [🚀 Introduction](#-introduction)
-- [✨ Key Features](#-key-features)
-- [⚙️ How It Works](#️-how-it-works)
-- [🧱 Architecture](#-architecture)
-- [📦 Modules](#-modules)
-- [🔥 Firebase Setup](#-firebase-setup)
-- [🛠️ Build Guide](#️-build-guide)
-- [📱 Parent App Setup](#-parent-app-setup)
-- [📺 TV Fallback Install](#-tv-fallback-install)
-- [🏢 Device Owner Provisioning](#-device-owner-provisioning)
-- [🔓 Remote Unlock + PIN Wall](#-remote-unlock--pin-wall)
-- [🗂️ Firebase Paths](#️-firebase-paths)
-- [🛡️ Security Limits](#️-security-limits)
-- [🏅 Project Info](#-project-info)
+- [Introduction](#introduction)
+- [Key Features](#key-features)
+- [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Modules](#modules)
+- [Firebase Setup](#firebase-setup)
+- [Build Guide](#build-guide)
+- [Parent App Setup](#parent-app-setup)
+- [TV Fallback Install](#tv-fallback-install)
+- [Device Owner Provisioning](#device-owner-provisioning)
+- [Remote Unlock + PIN Wall](#remote-unlock--pin-wall)
+- [Firebase Paths](#firebase-paths)
+- [Security Limits](#security-limits)
+- [Project Info](#project-info)
 
 ---
 
-# 🚀 Introduction
+# Introduction
 
 **GuardPulse** is designed for Android TV environments where ordinary app blocking is not enough. Instead of relying on network blocking, the TV app watches the foreground app through Accessibility and immediately covers blocked apps with a full-screen parent PIN wall.
 
@@ -45,27 +49,27 @@ It supports two enforcement paths:
 | **Fallback Mode** | Real-world TVs where Device Owner is blocked by firmware | Uses Accessibility, Usage Access, Device Admin, Firebase sync, and a PIN wall |
 | **Device Owner Mode** | Fresh/factory-reset TVs that allow enterprise provisioning | Adds stronger Android policy controls such as app suspension and restrictions |
 
-> ⚠️ This public repository intentionally uses placeholder Firebase values. Do not commit live Firebase project IDs, API keys, device IDs, APKs, local backups, or operational notes.
+> This public repository intentionally uses placeholder Firebase values. Do not commit live Firebase project IDs, API keys, device IDs, APKs, local backups, or operational notes.
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 | Feature | Description |
 | :--- | :--- |
-| 🔐 **Foreground PIN Wall** | Blocked Android TV apps open at the system level, then are immediately covered by a PIN screen. |
-| 📱 **Parent Dashboard** | Android parent app for pairing TVs, controlling apps, setting limits, and approving unlock requests. |
-| 🧭 **One-Visit Unlocks** | Correct PIN or parent approval unlocks the current app visit only; leaving the app clears the unlock. |
-| 📺 **Live TV Source Lock** | Handles HDMI/source apps such as Live TV through the same PIN-wall model. |
-| ⚙️ **Settings Section Locks** | Protects dangerous Settings areas such as Apps, Accessibility, Security, Developer options, and Reset. |
-| ⏱️ **Daily Limits** | Usage access tracks app time and turns reached limits into PIN-wall locks. |
-| 🔔 **Tamper Alerts** | Firebase tamper feed reports missing protection, admin disable attempts, and protected Settings access. |
-| 🧩 **Hidden TV Setup** | TV setup screen can be hidden from launcher and opened remotely from the parent app. |
-| 🛡️ **Device Owner Option** | Provisioning scripts support stronger policy mode on compatible fresh TVs. |
+| **Foreground PIN Wall** | Blocked Android TV apps open at the system level, then are immediately covered by a PIN screen. |
+| **Parent Dashboard** | Android parent app for pairing TVs, controlling apps, setting limits, and approving unlock requests. |
+| **One-Visit Unlocks** | Correct PIN or parent approval unlocks the current app visit only; leaving the app clears the unlock. |
+| **Live TV Source Lock** | Handles HDMI/source apps such as Live TV through the same PIN-wall model. |
+| **Settings Section Locks** | Protects dangerous Settings areas such as Apps, Accessibility, Security, Developer options, and Reset. |
+| **Daily Limits** | Usage access tracks app time and turns reached limits into PIN-wall locks. |
+| **Tamper Alerts** | Firebase tamper feed reports missing protection, admin disable attempts, and protected Settings access. |
+| **Hidden TV Setup** | TV setup screen can be hidden from launcher and opened remotely from the parent app. |
+| **Device Owner Option** | Provisioning scripts support stronger policy mode on compatible fresh TVs. |
 
 ---
 
-## ⚙️ How It Works
+## How It Works
 
 GuardPulse uses Firebase as the coordination layer between the parent phone and the Android TV app.
 
@@ -96,7 +100,7 @@ PIN Wall / Device Owner Enforcement
 
 ---
 
-## 🧱 Architecture
+## Architecture
 
 | Component | Role |
 | :--- | :--- |
@@ -108,7 +112,7 @@ PIN Wall / Device Owner Enforcement
 
 ---
 
-## 📦 Modules
+## Modules
 
 | Module | Description |
 | :--- | :--- |
@@ -120,7 +124,7 @@ PIN Wall / Device Owner Enforcement
 
 ---
 
-## 🔥 Firebase Setup
+## Firebase Setup
 
 Use the Firebase Spark plan and enable:
 
@@ -151,11 +155,11 @@ npm --prefix firebase install
 firebase emulators:exec --only database "npm --prefix firebase test"
 ```
 
-> 🔒 Keep live Firebase config local. Do not commit real project IDs, API keys, service account files, device IDs, or app backups to a public repository.
+> Keep live Firebase config local. Do not commit real project IDs, API keys, service account files, device IDs, or app backups to a public repository.
 
 ---
 
-## 🛠️ Build Guide
+## Build Guide
 
 ### Recommended Build
 
@@ -184,7 +188,7 @@ Generated APKs:
 
 ---
 
-## 📱 Parent App Setup
+## Parent App Setup
 
 1. Build the parent APK.
 2. Install it on the parent Android phone.
@@ -201,7 +205,7 @@ Install helper:
 
 ---
 
-## 📺 TV Fallback Install
+## TV Fallback Install
 
 Fallback mode is the practical path for TVs where Device Owner provisioning is unavailable.
 
@@ -231,7 +235,7 @@ Then complete these TV-side setup steps:
 
 ---
 
-## 🏢 Device Owner Provisioning
+## Device Owner Provisioning
 
 Use Device Owner mode only on a fresh/factory-reset TV where Android allows enterprise provisioning:
 
@@ -241,11 +245,11 @@ Use Device Owner mode only on a fresh/factory-reset TV where Android allows ente
 
 Device Owner mode can apply stronger Android policy controls, including app suspension, uninstall restrictions, Settings restrictions, safe-mode blocking, debugging restrictions, and unknown-source install restrictions where supported by firmware.
 
-> ⚠️ Some Android TV firmware blocks Device Owner setup after the TV has already been configured. Use fallback mode when provisioning fails.
+> Some Android TV firmware blocks Device Owner setup after the TV has already been configured. Use fallback mode when provisioning fails.
 
 ---
 
-## 🔓 Remote Unlock + PIN Wall
+## Remote Unlock + PIN Wall
 
 The lock screen supports two unlock paths:
 
@@ -260,7 +264,7 @@ One-visit app unlocks clear when the user leaves the unlocked app. Settings sect
 
 ---
 
-## 🗂️ Firebase Paths
+## Firebase Paths
 
 | Path | Purpose |
 | :--- | :--- |
@@ -278,7 +282,7 @@ Package names are stored as Firebase-safe encoded keys. Each app record also sto
 
 ---
 
-## 🛡️ Security Limits
+## Security Limits
 
 GuardPulse fallback mode is designed for practical parental control on consumer Android TV firmware. It is not the same as a fully managed enterprise device.
 
@@ -295,7 +299,7 @@ For the strongest protection, use Device Owner mode on compatible hardware. For 
 
 ---
 
-## 🏅 Project Info
+## Project Info
 
 | Item | Value |
 | :--- | :--- |

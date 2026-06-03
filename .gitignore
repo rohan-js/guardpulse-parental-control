@@ -16,6 +16,7 @@ google-services.json
 PROJECT_CONTEXT.md
 tv-install-backups/
 *.tar
+*.zip
 .env
 .env.*
 serviceAccount*.json
