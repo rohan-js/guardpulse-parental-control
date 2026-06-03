@@ -1,0 +1,90 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        "devices": {
+          "$deviceId": {
+            ".write": "auth != null && (auth.uid == $uid || root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid)",
+            ".validate": "newData.hasChildren(['deviceId']) && newData.child('deviceId').val() == $deviceId && (!newData.child('label').exists() || newData.child('label').isString()) && (!newData.child('pairedAt').exists() || newData.child('pairedAt').isNumber()) && (!newData.child('lastSeen').exists() || newData.child('lastSeen').isNumber())"
+          }
+        }
+      }
+    },
+    "devices": {
+      "$deviceId": {
+        ".read": "auth != null && (data.child('meta').child('ownerUid').val() == auth.uid || data.child('meta').child('tvUid').val() == auth.uid)",
+        "meta": {
+          ".write": "auth != null && ((!data.exists() && newData.child('tvUid').val() == auth.uid) || data.child('tvUid').val() == auth.uid)",
+          ".validate": "newData.hasChildren(['deviceId', 'tvUid']) && newData.child('deviceId').val() == $deviceId && newData.child('tvUid').isString() && (!newData.child('ownerUid').exists() || newData.child('ownerUid').isString()) && (!newData.child('label').exists() || newData.child('label').isString()) && (!newData.child('manufacturer').exists() || newData.child('manufacturer').isString()) && (!newData.child('model').exists() || newData.child('model').isString()) && (!newData.child('androidSdk').exists() || newData.child('androidSdk').isNumber())"
+        },
+        "apps": {
+          ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+          "$packageKey": {
+            ".validate": "newData.hasChildren(['packageName', 'label', 'blockable']) && newData.child('packageName').isString() && newData.child('label').isString() && newData.child('blockable').isBoolean() && (!newData.child('versionName').exists() || newData.child('versionName').isString()) && (!newData.child('versionCode').exists() || newData.child('versionCode').isNumber()) && (!newData.child('systemApp').exists() || newData.child('systemApp').isBoolean()) && (!newData.child('protectedReason').exists() || newData.child('protectedReason').isString())"
+          }
+        },
+        "state": {
+          "apps": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            "$packageKey": {
+              ".validate": "newData.hasChildren(['packageName', 'requestedSuspended', 'enforcementMode', 'fallbackLocked', 'usageMinutesToday']) && newData.child('packageName').isString() && newData.child('requestedSuspended').isBoolean() && (!newData.child('suspended').exists() || newData.child('suspended').isBoolean()) && newData.child('enforcementMode').isString() && newData.child('fallbackLocked').isBoolean() && newData.child('usageMinutesToday').isNumber() && (!newData.child('manualBlocked').exists() || newData.child('manualBlocked').isBoolean()) && (!newData.child('dailyLimitBlocked').exists() || newData.child('dailyLimitBlocked').isBoolean()) && (!newData.child('networkBlocked').exists() || newData.child('networkBlocked').isBoolean()) && (!newData.child('vpnApplied').exists() || newData.child('vpnApplied').isBoolean()) && (!newData.child('vpnActive').exists() || newData.child('vpnActive').isBoolean()) && (!newData.child('lockBlocked').exists() || newData.child('lockBlocked').isBoolean()) && (!newData.child('lockReason').exists() || newData.child('lockReason').isString()) && (!newData.child('vpnLastError').exists() || newData.child('vpnLastError').isString()) && (!newData.child('blockReason').exists() || newData.child('blockReason').isString()) && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('lastError').exists() || newData.child('lastError').isString())"
+            }
+          }
+        },
+        "heartbeat": {
+          ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+          ".validate": "newData.hasChildren(['online', 'lastSeen']) && newData.child('online').isBoolean() && newData.child('lastSeen').isNumber()"
+        },
+        "security": {
+          ".read": "auth != null && (root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid || root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid)",
+          "pin": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['salt', 'hash']) && newData.child('salt').isString() && newData.child('hash').isString() && newData.child('salt').val().matches(/^[-_A-Za-z0-9]{22}$/) && newData.child('hash').val().matches(/^[-_A-Za-z0-9]{43}$/) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid)"
+          },
+          "runtime": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            ".validate": "(!newData.child('enforcementMode').exists() || newData.child('enforcementMode').isString()) && (!newData.child('deviceOwner').exists() || newData.child('deviceOwner').isBoolean()) && (!newData.child('deviceAdmin').exists() || newData.child('deviceAdmin').isBoolean()) && (!newData.child('deviceAdminSetupAvailable').exists() || newData.child('deviceAdminSetupAvailable').isBoolean()) && (!newData.child('accessibility').exists() || newData.child('accessibility').isBoolean()) && (!newData.child('usageAccess').exists() || newData.child('usageAccess').isBoolean()) && (!newData.child('vpnPrepared').exists() || newData.child('vpnPrepared').isBoolean()) && (!newData.child('vpnActive').exists() || newData.child('vpnActive').isBoolean()) && (!newData.child('vpnBlockedCount').exists() || (newData.child('vpnBlockedCount').isNumber() && newData.child('vpnBlockedCount').val() >= 0)) && (!newData.child('vpnLastError').exists() || newData.child('vpnLastError').isString()) && (!newData.child('backgroundUnrestricted').exists() || newData.child('backgroundUnrestricted').isBoolean()) && (!newData.child('pinConfigured').exists() || newData.child('pinConfigured').isBoolean()) && (!newData.child('protectionHealthy').exists() || newData.child('protectionHealthy').isBoolean()) && (!newData.child('lastForegroundPackage').exists() || newData.child('lastForegroundPackage').isString()) && (!newData.child('lastSyncError').exists() || newData.child('lastSyncError').isString()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())"
+          }
+        },
+        "policy": {
+          "apps": {
+            "$packageKey": {
+              ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid",
+              ".validate": "newData.hasChildren(['packageName', 'manualBlocked']) && newData.child('packageName').isString() && newData.child('manualBlocked').isBoolean() && (!newData.child('dailyLimitMinutes').exists() || (newData.child('dailyLimitMinutes').isNumber() && newData.child('dailyLimitMinutes').val() > 0 && newData.child('dailyLimitMinutes').val() <= 1440)) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber())"
+            }
+          }
+        },
+        "tamperEvents": {
+          "$eventId": {
+            ".write": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['type', 'createdAt']) && newData.child('type').isString() && newData.child('createdAt').isNumber() && (!newData.child('message').exists() || newData.child('message').isString())"
+          }
+        },
+        "unlockRequests": {
+          "$requestId": {
+            ".write": "auth != null && ((root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid && (!data.exists() || data.child('status').val() == 'pending')) || (root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid && data.exists()))",
+            ".validate": "newData.hasChildren(['requestId', 'packageName', 'reason', 'status']) && newData.child('requestId').val() == $requestId && newData.child('packageName').isString() && newData.child('reason').isString() && (newData.child('status').val() == 'pending' || newData.child('status').val() == 'approved' || newData.child('status').val() == 'denied' || newData.child('status').val() == 'expired') && (!newData.child('createdAt').exists() || newData.child('createdAt').isNumber()) && (!newData.child('expiresAt').exists() || newData.child('expiresAt').isNumber()) && (!newData.child('updatedAt').exists() || newData.child('updatedAt').isNumber()) && (!newData.child('updatedBy').exists() || newData.child('updatedBy').val() == auth.uid)"
+          }
+        },
+        "commands": {
+          "$commandId": {
+            ".write": "auth != null && ((root.child('devices').child($deviceId).child('meta').child('ownerUid').val() == auth.uid && !data.exists()) || (root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid && data.exists()))",
+            ".validate": "newData.hasChildren(['type']) && (newData.child('type').val() == 'rescanApps' || newData.child('type').val() == 'resetToday' || newData.child('type').val() == 'unpair' || newData.child('type').val() == 'openSetup') && (!newData.child('packageName').exists() || newData.child('packageName').isString()) && (!newData.child('requestedBy').exists() || newData.child('requestedBy').isString()) && (!newData.child('createdAt').exists() || newData.child('createdAt').isNumber()) && (!newData.child('status').exists() || newData.child('status').isString()) && (!newData.child('error').exists() || newData.child('error').isString())"
+          }
+        }
+      }
+    },
+    "pairRequests": {
+      "$deviceId": {
+        ".read": "auth != null && root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid",
+        "$requestId": {
+          ".write": "auth != null && ((!data.exists() && newData.child('parentUid').val() == auth.uid) || root.child('devices').child($deviceId).child('meta').child('tvUid').val() == auth.uid)",
+          ".validate": "!newData.exists() || (newData.hasChildren(['parentUid', 'createdAt', 'status']) && newData.child('parentUid').isString() && newData.child('createdAt').isNumber() && newData.child('status').isString() && (!newData.child('secret').exists() || newData.child('secret').isString()) && (!newData.child('code').exists() || newData.child('code').isString()))"
+        }
+      }
+    }
+  }
+}

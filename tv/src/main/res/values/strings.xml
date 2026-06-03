@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Device Service</string>
+    <string name="device_admin_description">Required for device protection policies.</string>
+    <string name="accessibility_service_label">Device Support Service</string>
+    <string name="accessibility_service_description">Supports device protection and required access monitoring.</string>
+</resources>
