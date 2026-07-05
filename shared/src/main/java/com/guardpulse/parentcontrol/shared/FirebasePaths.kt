@@ -12,6 +12,12 @@ object FirebasePaths {
     fun devicePolicyApps(deviceId: String) = "devices/$deviceId/policy/apps"
     fun devicePolicyApp(deviceId: String, packageName: String) =
         "devices/$deviceId/policy/apps/${PackageKeys.encode(packageName)}"
+    fun devicePolicyModes(deviceId: String) = "devices/$deviceId/policy/modes"
+    fun devicePolicyMode(deviceId: String, modeId: String) =
+        "devices/$deviceId/policy/modes/$modeId"
+    fun devicePolicyModeApp(deviceId: String, modeId: String, packageName: String) =
+        "devices/$deviceId/policy/modes/$modeId/apps/${PackageKeys.encode(packageName)}"
+    fun devicePolicyActiveMode(deviceId: String) = "devices/$deviceId/policy/activeMode"
     fun deviceStateApps(deviceId: String) = "devices/$deviceId/state/apps"
     fun deviceStateApp(deviceId: String, packageName: String) =
         "devices/$deviceId/state/apps/${PackageKeys.encode(packageName)}"
@@ -20,6 +26,7 @@ object FirebasePaths {
     fun deviceSecurity(deviceId: String) = "devices/$deviceId/security"
     fun deviceSecurityPin(deviceId: String) = "devices/$deviceId/security/pin"
     fun deviceSecurityRuntime(deviceId: String) = "devices/$deviceId/security/runtime"
+    fun deviceSecuritySafeMode(deviceId: String) = "devices/$deviceId/security/safeMode"
     fun deviceTamperEvents(deviceId: String) = "devices/$deviceId/tamperEvents"
     fun deviceUnlockRequests(deviceId: String) = "devices/$deviceId/unlockRequests"
     fun deviceUnlockRequest(deviceId: String, requestId: String) =

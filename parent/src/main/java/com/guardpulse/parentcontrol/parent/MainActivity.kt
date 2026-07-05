@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Tv
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -99,6 +100,14 @@ private data class ListenerRegistration(
     val listener: ValueEventListener
 )
 
+private data class ConfirmAction(
+    val title: String,
+    val body: String,
+    val confirmLabel: String,
+    val destructive: Boolean = false,
+    val onConfirm: () -> Unit
+)
+
 class MainActivity : ComponentActivity() {
     private var db: DatabaseReference? = null
     private var repository: ParentRepository? = null
@@ -106,6 +115,9 @@ class MainActivity : ComponentActivity() {
     private var apps by mutableStateOf(emptyMap<String, ParentApp>())
     private var policies by mutableStateOf(emptyMap<String, ParentPolicy>())
     private var states by mutableStateOf(emptyMap<String, ParentState>())
+    private var modes by mutableStateOf(emptyList<ParentMode>())
+    private var activeMode by mutableStateOf(ActiveMode())
+    private var safeMode by mutableStateOf(SafeModeState())
     private var security by mutableStateOf(SecurityRuntime())
     private var unlockRequests by mutableStateOf(emptyList<UnlockRequest>())
     private var tamperEvents by mutableStateOf(emptyList<TamperEvent>())
@@ -160,6 +172,9 @@ class MainActivity : ComponentActivity() {
                             apps = apps,
                             policies = policies,
                             states = states,
+                            modes = modes,
+                            activeMode = activeMode,
+                            safeMode = safeMode,
                             security = security,
                             unlockRequests = unlockRequests,
                             tamperEvents = tamperEvents,
@@ -173,8 +188,17 @@ class MainActivity : ComponentActivity() {
                             onPair = ::createPairRequest,
                             onUpdatePolicy = ::updatePolicy,
                             onSetPin = ::setPin,
-                            onApproveUnlock = { request -> updateUnlock(request, PolicyConstants.UNLOCK_APPROVED) },
+                            onApproveUnlock = { request, approvalType, durationMs ->
+                                updateUnlock(request, PolicyConstants.UNLOCK_APPROVED, approvalType, durationMs)
+                            },
                             onDenyUnlock = { request -> updateUnlock(request, PolicyConstants.UNLOCK_DENIED) },
+                            onCreateMode = ::createMode,
+                            onRenameMode = ::renameMode,
+                            onDeleteMode = ::deleteMode,
+                            onUpdateModePolicy = ::updateModePolicy,
+                            onSetActiveMode = ::setActiveMode,
+                            onStartSafeMode = ::startSafeMode,
+                            onStopSafeMode = ::stopSafeMode,
                             onRescan = { selectedDeviceId?.let { sendCommand(it, PolicyConstants.COMMAND_RESCAN_APPS) } },
                             onOpenTvSetup = { selectedDeviceId?.let { sendCommand(it, PolicyConstants.COMMAND_OPEN_SETUP) } },
                             onResetToday = { packageName ->
@@ -243,6 +267,9 @@ class MainActivity : ComponentActivity() {
         apps = emptyMap()
         policies = emptyMap()
         states = emptyMap()
+        modes = emptyList()
+        activeMode = ActiveMode()
+        safeMode = SafeModeState()
         security = SecurityRuntime()
         unlockRequests = emptyList()
         tamperEvents = emptyList()
@@ -339,6 +366,50 @@ class MainActivity : ComponentActivity() {
             }.toMap()
         }
 
+        registerDetailListener(database.child(FirebasePaths.devicePolicyModes(deviceId))) {
+            modes = it.children.mapNotNull { modeSnapshot ->
+                val modeId = modeSnapshot.child("modeId").getValue(String::class.java)
+                    ?: modeSnapshot.key
+                    ?: return@mapNotNull null
+                val appPolicies = modeSnapshot.child("apps").children.mapNotNull appPolicy@{ child ->
+                    val packageName = child.child("packageName").getValue(String::class.java)
+                        ?: runCatching { PackageKeys.decode(child.key.orEmpty()) }.getOrNull()
+                        ?: return@appPolicy null
+                    val limit = child.child("dailyLimitMinutes").getValue(Long::class.java)
+                        ?.toInt()
+                        ?.takeIf { value -> value > 0 }
+                    packageName to ParentPolicy(
+                        manualBlocked = child.child("manualBlocked").getValue(Boolean::class.java) ?: false,
+                        dailyLimitMinutes = limit
+                    )
+                }.toMap()
+                ParentMode(
+                    modeId = modeId,
+                    name = modeSnapshot.child("name").getValue(String::class.java) ?: "Mode",
+                    appPolicies = appPolicies,
+                    createdAt = modeSnapshot.child("createdAt").getValue(Long::class.java),
+                    updatedAt = modeSnapshot.child("updatedAt").getValue(Long::class.java)
+                )
+            }.sortedBy { mode -> mode.name.lowercase() }
+        }
+
+        registerDetailListener(database.child(FirebasePaths.devicePolicyActiveMode(deviceId))) {
+            activeMode = ActiveMode(
+                modeId = it.child("modeId").getValue(String::class.java),
+                modeName = it.child("modeName").getValue(String::class.java),
+                activatedAt = it.child("activatedAt").getValue(Long::class.java)
+            )
+        }
+
+        registerDetailListener(database.child(FirebasePaths.deviceSecuritySafeMode(deviceId))) {
+            safeMode = SafeModeState(
+                enabled = it.child("enabled").getValue(Boolean::class.java) ?: false,
+                until = it.child("until").getValue(Long::class.java),
+                startedAt = it.child("startedAt").getValue(Long::class.java),
+                startedBy = it.child("startedBy").getValue(String::class.java)
+            )
+        }
+
         registerDetailListener(database.child(FirebasePaths.deviceStateApps(deviceId))) {
             states = it.children.mapNotNull { child ->
                 val packageName = child.child("packageName").getValue(String::class.java)
@@ -382,7 +453,11 @@ class MainActivity : ComponentActivity() {
                 pinConfigured = it.child("pinConfigured").getValue(Boolean::class.java) ?: false,
                 protectionHealthy = it.child("protectionHealthy").getValue(Boolean::class.java) ?: false,
                 lastForegroundPackage = it.child("lastForegroundPackage").getValue(String::class.java),
-                lastSyncError = it.child("lastSyncError").getValue(String::class.java)
+                lastSyncError = it.child("lastSyncError").getValue(String::class.java),
+                safeModeActive = it.child("safeModeActive").getValue(Boolean::class.java) ?: false,
+                safeModeUntil = it.child("safeModeUntil").getValue(Long::class.java),
+                activeModeId = it.child("activeModeId").getValue(String::class.java),
+                activeModeName = it.child("activeModeName").getValue(String::class.java)
             )
         }
 
@@ -394,7 +469,10 @@ class MainActivity : ComponentActivity() {
                     reason = child.child("reason").getValue(String::class.java) ?: "",
                     status = child.child("status").getValue(String::class.java) ?: "",
                     createdAt = child.child("createdAt").getValue(Long::class.java),
-                    expiresAt = child.child("expiresAt").getValue(Long::class.java)
+                    expiresAt = child.child("expiresAt").getValue(Long::class.java),
+                    updatedAt = child.child("updatedAt").getValue(Long::class.java),
+                    approvalType = child.child("approvalType").getValue(String::class.java),
+                    approvalDurationMs = child.child("approvalDurationMs").getValue(Long::class.java)
                 )
             }.sortedByDescending { request -> request.createdAt ?: 0L }
         }
@@ -524,7 +602,12 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun updateUnlock(request: UnlockRequest, status: String) {
+    private fun updateUnlock(
+        request: UnlockRequest,
+        status: String,
+        approvalType: String? = null,
+        approvalDurationMs: Long? = null
+    ) {
         val deviceId = selectedDeviceId ?: run {
             message = "Select a TV first"
             return
@@ -541,6 +624,8 @@ class MainActivity : ComponentActivity() {
                 deviceId = deviceId,
                 request = request,
                 status = PolicyConstants.UNLOCK_EXPIRED,
+                approvalType = null,
+                approvalDurationMs = null,
                 onSuccess = { message = "Unlock request expired" },
                 onError = { message = it }
             )
@@ -550,9 +635,126 @@ class MainActivity : ComponentActivity() {
             deviceId = deviceId,
             request = request,
             status = status,
+            approvalType = approvalType,
+            approvalDurationMs = approvalDurationMs,
             onSuccess = {
-                message = if (status == PolicyConstants.UNLOCK_APPROVED) "Unlock approved" else "Unlock denied"
+                message = when {
+                    status == PolicyConstants.UNLOCK_APPROVED && approvalType == PolicyConstants.UNLOCK_APPROVAL_TIMED ->
+                        "Unlock approved for ${(approvalDurationMs ?: 0L) / 60_000L} minutes"
+                    status == PolicyConstants.UNLOCK_APPROVED -> "Unlock approved for one visit"
+                    else -> "Unlock denied"
+                }
             },
+            onError = { message = it }
+        )
+    }
+
+    private fun createMode(name: String) {
+        val deviceId = selectedDeviceId ?: run {
+            message = "Select a TV first"
+            return
+        }
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) {
+            message = "Mode name cannot be empty"
+            return
+        }
+        repository?.createMode(
+            deviceId = deviceId,
+            name = trimmed,
+            onSuccess = { message = "Mode created" },
+            onError = { message = it }
+        )
+    }
+
+    private fun renameMode(modeId: String, name: String) {
+        val deviceId = selectedDeviceId ?: return
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) {
+            message = "Mode name cannot be empty"
+            return
+        }
+        repository?.updateModeName(
+            deviceId = deviceId,
+            modeId = modeId,
+            name = trimmed,
+            onSuccess = { message = "Mode renamed" },
+            onError = { message = it }
+        )
+    }
+
+    private fun deleteMode(modeId: String) {
+        val deviceId = selectedDeviceId ?: return
+        repository?.deleteMode(
+            deviceId = deviceId,
+            modeId = modeId,
+            onSuccess = { message = "Mode deleted" },
+            onError = { message = it }
+        )
+    }
+
+    private fun updateModePolicy(modeId: String, packageName: String, policy: ParentPolicy) {
+        val deviceId = selectedDeviceId ?: run {
+            message = "Select a TV first"
+            return
+        }
+        val app = apps[packageName]
+        if (app?.blockable == false) {
+            message = "This app is protected: ${app.protectedReason ?: "not blockable"}"
+            return
+        }
+        if (policy.dailyLimitMinutes != null && policy.dailyLimitMinutes !in 1..1440) {
+            message = "Daily limit must be between 1 and 1440 minutes"
+            return
+        }
+        repository?.updateModePolicy(
+            deviceId = deviceId,
+            modeId = modeId,
+            packageName = packageName,
+            policy = policy,
+            onSuccess = { message = "Mode app policy updated" },
+            onError = { message = it }
+        )
+    }
+
+    private fun setActiveMode(mode: ParentMode?) {
+        val deviceId = selectedDeviceId ?: run {
+            message = "Select a TV first"
+            return
+        }
+        repository?.setActiveMode(
+            deviceId = deviceId,
+            mode = mode,
+            onSuccess = { message = if (mode == null) "Mode disabled" else "Mode activated" },
+            onError = { message = it }
+        )
+    }
+
+    private fun startSafeMode(durationMinutes: Int) {
+        val deviceId = selectedDeviceId ?: run {
+            message = "Select a TV first"
+            return
+        }
+        if (durationMinutes !in 1..1440) {
+            message = "Safe Mode duration must be between 1 and 1440 minutes"
+            return
+        }
+        repository?.startSafeMode(
+            deviceId = deviceId,
+            durationMinutes = durationMinutes,
+            onSuccess = { message = "Safe Mode started for $durationMinutes minutes" },
+            onError = { message = it }
+        )
+    }
+
+    private fun stopSafeMode() {
+        val deviceId = selectedDeviceId ?: run {
+            message = "Select a TV first"
+            return
+        }
+        repository?.stopSafeMode(
+            deviceId = deviceId,
+            onSuccess = { message = "Safe Mode deactivated" },
             onError = { message = it }
         )
     }
@@ -586,6 +788,9 @@ class MainActivity : ComponentActivity() {
                     apps = emptyMap()
                     policies = emptyMap()
                     states = emptyMap()
+                    modes = emptyList()
+                    activeMode = ActiveMode()
+                    safeMode = SafeModeState()
                     security = SecurityRuntime()
                     unlockRequests = emptyList()
                     tamperEvents = emptyList()
@@ -886,6 +1091,35 @@ private fun EmptyPanel(title: String, detail: String) {
 }
 
 @Composable
+private fun ConfirmDialog(
+    action: ConfirmAction,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(action.title, color = GuardNavy, fontWeight = FontWeight.Bold) },
+        text = { Text(action.body, color = TextMuted) },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (action.destructive) AlertRed else ActionBlue
+                )
+            ) {
+                Text(action.confirmLabel)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        containerColor = SurfaceCard
+    )
+}
+
+@Composable
 private fun TopBar(selectedDeviceId: String?, onSignOut: () -> Unit) {
     Row(
         modifier = Modifier
@@ -953,6 +1187,9 @@ private fun ParentDashboard(
     apps: Map<String, ParentApp>,
     policies: Map<String, ParentPolicy>,
     states: Map<String, ParentState>,
+    modes: List<ParentMode>,
+    activeMode: ActiveMode,
+    safeMode: SafeModeState,
     security: SecurityRuntime,
     unlockRequests: List<UnlockRequest>,
     tamperEvents: List<TamperEvent>,
@@ -963,16 +1200,27 @@ private fun ParentDashboard(
     onPair: (String, String, String) -> Unit,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
     onSetPin: (String) -> Unit,
-    onApproveUnlock: (UnlockRequest) -> Unit,
+    onApproveUnlock: (UnlockRequest, String, Long?) -> Unit,
     onDenyUnlock: (UnlockRequest) -> Unit,
+    onCreateMode: (String) -> Unit,
+    onRenameMode: (String, String) -> Unit,
+    onDeleteMode: (String) -> Unit,
+    onUpdateModePolicy: (String, String, ParentPolicy) -> Unit,
+    onSetActiveMode: (ParentMode?) -> Unit,
+    onStartSafeMode: (Int) -> Unit,
+    onStopSafeMode: () -> Unit,
     onRescan: () -> Unit,
     onOpenTvSetup: () -> Unit,
     onResetToday: (String) -> Unit,
     onScanQr: () -> Unit
 ) {
     var tab by remember { mutableIntStateOf(0) }
+    var confirmAction by remember { mutableStateOf<ConfirmAction?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val selectedDevice = devices.firstOrNull { it.deviceId == selectedDeviceId }
+    val confirm: (String, String, String, Boolean, () -> Unit) -> Unit = { title, body, label, destructive, action ->
+        confirmAction = ConfirmAction(title, body, label, destructive, action)
+    }
     LaunchedEffect(message) {
         if (!message.isNullOrBlank()) {
             snackbarHostState.showSnackbar(message)
@@ -981,15 +1229,102 @@ private fun ParentDashboard(
     Scaffold(
         containerColor = SurfaceLight,
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = { TopBar(selectedDevice?.label ?: selectedDeviceId, onSignOut) },
+        topBar = {
+            TopBar(selectedDevice?.label ?: selectedDeviceId) {
+                confirm(
+                    "Sign out?",
+                    "You will need to sign in again before managing this TV.",
+                    "Sign out",
+                    true,
+                    onSignOut
+                )
+            }
+        },
         bottomBar = { BottomNav(tab) { tab = it } }
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (tab) {
-                0 -> DevicesTab(devices, loadingDevices, selectedDeviceId, onSelectDevice, onRemoveDevice, onPair, onScanQr)
-                1 -> AppsTab(selectedDevice, selectedDeviceId, loadingDeviceDetails, apps, policies, states, onUpdatePolicy, onRescan, onResetToday)
-                2 -> SecurityTab(selectedDeviceId, loadingDeviceDetails, security, unlockRequests, onSetPin, onApproveUnlock, onDenyUnlock, onOpenTvSetup)
+                0 -> DevicesTab(
+                    devices,
+                    loadingDevices,
+                    selectedDeviceId,
+                    onSelectDevice,
+                    { deviceId ->
+                        val label = devices.firstOrNull { it.deviceId == deviceId }?.label ?: deviceId
+                        confirm(
+                            "Remove paired TV?",
+                            "This removes $label from the parent account and sends an unpair command to the TV.",
+                            "Remove",
+                            true
+                        ) { onRemoveDevice(deviceId) }
+                    },
+                    onPair,
+                    onScanQr
+                )
+                1 -> AppsTab(
+                    selectedDevice,
+                    selectedDeviceId,
+                    loadingDeviceDetails,
+                    apps,
+                    policies,
+                    states,
+                    onUpdatePolicy,
+                    onRescan,
+                    { packageName ->
+                        val label = apps[packageName]?.label ?: packageName
+                        confirm(
+                            "Reset today's limit?",
+                            "This clears today's daily-limit lock and usage offset for $label.",
+                            "Reset today",
+                            false
+                        ) { onResetToday(packageName) }
+                    }
+                )
+                2 -> SecurityTab(
+                    selectedDeviceId,
+                    loadingDeviceDetails,
+                    apps,
+                    modes,
+                    activeMode,
+                    safeMode,
+                    security,
+                    unlockRequests,
+                    onSetPin,
+                    onApproveUnlock,
+                    onDenyUnlock,
+                    onCreateMode,
+                    onRenameMode,
+                    onDeleteMode,
+                    onUpdateModePolicy,
+                    { mode ->
+                        confirm(
+                            if (mode == null) "Disable active mode?" else "Activate ${mode.name}?",
+                            if (mode == null) {
+                                "The TV will return to normal per-app policies."
+                            } else {
+                                "The TV will immediately apply this mode's app locks and limits."
+                            },
+                            if (mode == null) "Disable" else "Activate",
+                            false
+                        ) { onSetActiveMode(mode) }
+                    },
+                    onStartSafeMode,
+                    onStopSafeMode,
+                    confirm,
+                    onOpenTvSetup
+                )
                 3 -> EventsTab(tamperEvents)
+            }
+            confirmAction?.let { action ->
+                ConfirmDialog(
+                    action = action,
+                    onDismiss = { confirmAction = null },
+                    onConfirm = {
+                        val pending = confirmAction ?: return@ConfirmDialog
+                        confirmAction = null
+                        pending.onConfirm()
+                    }
+                )
             }
         }
     }
@@ -1475,14 +1810,33 @@ private fun StatusLabel(label: String, color: Color, modifier: Modifier = Modifi
 private fun SecurityTab(
     selectedDeviceId: String?,
     loadingDeviceDetails: Boolean,
+    apps: Map<String, ParentApp>,
+    modes: List<ParentMode>,
+    activeMode: ActiveMode,
+    safeMode: SafeModeState,
     security: SecurityRuntime,
     unlockRequests: List<UnlockRequest>,
     onSetPin: (String) -> Unit,
-    onApproveUnlock: (UnlockRequest) -> Unit,
+    onApproveUnlock: (UnlockRequest, String, Long?) -> Unit,
     onDenyUnlock: (UnlockRequest) -> Unit,
+    onCreateMode: (String) -> Unit,
+    onRenameMode: (String, String) -> Unit,
+    onDeleteMode: (String) -> Unit,
+    onUpdateModePolicy: (String, String, ParentPolicy) -> Unit,
+    onSetActiveMode: (ParentMode?) -> Unit,
+    onStartSafeMode: (Int) -> Unit,
+    onStopSafeMode: () -> Unit,
+    onConfirmAction: (String, String, String, Boolean, () -> Unit) -> Unit,
     onOpenTvSetup: () -> Unit
 ) {
     var pin by remember { mutableStateOf("") }
+    var newModeName by remember { mutableStateOf("") }
+    var expandedModeId by remember(modes) {
+        mutableStateOf(modes.firstOrNull { it.modeId == activeMode.modeId }?.modeId)
+    }
+    var safeModeCustomMinutes by remember { mutableStateOf("") }
+    val safeModeActive = safeMode.isActive() || security.safeModeActive
+    val safeModeUntil = safeMode.until ?: security.safeModeUntil
     LazyColumn(verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(18.dp)) {
         item {
             Text("Security Settings", style = MaterialTheme.typography.headlineSmall, color = GuardNavy, fontWeight = FontWeight.Bold)
@@ -1518,6 +1872,12 @@ private fun SecurityTab(
                 )
                 RuntimeRow("PIN", if (security.pinConfigured) "Configured" else "Missing", security.pinConfigured)
                 RuntimeRow("Healthy", if (security.protectionHealthy) "Healthy" else "Needs setup", security.protectionHealthy)
+                RuntimeRow("Active Mode", activeMode.modeName ?: security.activeModeName ?: "Normal policy", activeMode.modeId != null || security.activeModeId != null)
+                RuntimeRow(
+                    "Safe Mode",
+                    if (safeModeActive) "Active until ${formatTimestamp(safeModeUntil)}" else "Off",
+                    !safeModeActive
+                )
                 if (security.enforcementMode == PolicyConstants.ENFORCEMENT_FALLBACK) {
                     Text(
                         "Fallback mode protects via Accessibility and PIN gate. It is not uninstall-proof.",
@@ -1532,6 +1892,116 @@ private fun SecurityTab(
                 security.lastSyncError?.let { Text("Last sync error: $it", color = AlertRed, modifier = Modifier.padding(top = 10.dp)) }
                 security.lastForegroundPackage?.let { Text("Last foreground: $it", color = TextMuted, modifier = Modifier.padding(top = 8.dp)) }
             }
+        }
+        item {
+            GuardCard {
+                Text("Emergency Safe Mode", style = MaterialTheme.typography.titleLarge, color = GuardNavy, fontWeight = FontWeight.Bold)
+                Text(
+                    if (safeModeActive) {
+                        "All app, Live TV, Settings, and protected Settings-section locks are paused until ${formatTimestamp(safeModeUntil)}."
+                    } else {
+                        "Pause all TV PIN locks for a chosen duration without disabling sync, inventory, or health reporting."
+                    },
+                    color = TextMuted,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                if (safeModeActive) {
+                    Button(
+                        onClick = {
+                            onConfirmAction(
+                                "Deactivate Safe Mode?",
+                                "TV app, Live TV, Settings, and Settings-section locks will resume immediately.",
+                                "Deactivate",
+                                true,
+                                onStopSafeMode
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp).height(52.dp)
+                    ) {
+                        Icon(Icons.Outlined.Security, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Deactivate Safe Mode")
+                    }
+                } else {
+                    Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(15, 30, 60, 120).forEach { minutes ->
+                            OutlinedButton(
+                                onClick = {
+                                    onConfirmAction(
+                                        "Start Safe Mode?",
+                                        "All TV PIN locks will pause for $minutes minutes, until ${formatTimestamp(System.currentTimeMillis() + minutes * 60_000L)}.",
+                                        "Start",
+                                        true
+                                    ) { onStartSafeMode(minutes) }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("${minutes}m")
+                            }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            safeModeCustomMinutes,
+                            { safeModeCustomMinutes = it.filter(Char::isDigit).take(4) },
+                            label = { Text("Custom minutes") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Button(
+                            onClick = {
+                                val minutes = safeModeCustomMinutes.toIntOrNull()
+                                if (minutes != null && minutes in 1..1440) {
+                                    onConfirmAction(
+                                        "Start Safe Mode?",
+                                        "All TV PIN locks will pause for $minutes minutes, until ${formatTimestamp(System.currentTimeMillis() + minutes * 60_000L)}.",
+                                        "Start",
+                                        true
+                                    ) { onStartSafeMode(minutes) }
+                                }
+                            },
+                            enabled = safeModeCustomMinutes.toIntOrNull()?.let { it in 1..1440 } == true,
+                            colors = ButtonDefaults.buttonColors(containerColor = AlertRed),
+                            modifier = Modifier.height(58.dp)
+                        ) {
+                            Text("Start")
+                        }
+                    }
+                    Text("Custom duration must be 1 to 1440 minutes.", color = TextMuted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+        }
+        item {
+            ModesCard(
+                apps = apps,
+                modes = modes,
+                activeMode = activeMode,
+                expandedModeId = expandedModeId,
+                newModeName = newModeName,
+                onNewModeNameChange = { newModeName = it },
+                onCreateMode = {
+                    onCreateMode(newModeName)
+                    newModeName = ""
+                },
+                onToggleMode = { modeId -> expandedModeId = if (expandedModeId == modeId) null else modeId },
+                onRenameMode = onRenameMode,
+                onDeleteMode = { mode ->
+                    onConfirmAction(
+                        "Delete ${mode.name}?",
+                        "This permanently removes the mode and its app rules.",
+                        "Delete",
+                        true
+                    ) {
+                        if (expandedModeId == mode.modeId) expandedModeId = null
+                        onDeleteMode(mode.modeId)
+                    }
+                },
+                onSetActiveMode = onSetActiveMode,
+                onUpdateModePolicy = onUpdateModePolicy
+            )
         }
         item {
             GuardCard {
@@ -1572,7 +2042,14 @@ private fun SecurityTab(
                     modifier = Modifier.padding(top = 14.dp)
                 )
                 Button(
-                    onClick = { onSetPin(pin) },
+                    onClick = {
+                        onConfirmAction(
+                            if (security.pinConfigured) "Change parent PIN?" else "Set parent PIN?",
+                            "This PIN controls the TV lock wall and protected setup access.",
+                            if (security.pinConfigured) "Change PIN" else "Set PIN",
+                            false
+                        ) { onSetPin(pin) }
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = GuardNavy),
                     shape = RoundedCornerShape(50),
                     modifier = Modifier.fillMaxWidth().padding(top = 14.dp).height(52.dp)
@@ -1589,15 +2066,19 @@ private fun SecurityTab(
                 (it.expiresAt == null || System.currentTimeMillis() <= it.expiresAt)
         }) { request ->
             GuardCard(modifier = Modifier.border(2.dp, ActionBlue.copy(alpha = 0.35f), RoundedCornerShape(14.dp))) {
+                val appLabel = apps[request.packageName]?.label ?: request.packageName
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Box(Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)).background(AlertRed), contentAlignment = Alignment.Center) {
                         Icon(Icons.Outlined.Tv, contentDescription = null, tint = Color.White)
                     }
                     Column(Modifier.weight(1f)) {
-                        Text(request.packageName, color = GuardNavy, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(appLabel, color = GuardNavy, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(request.packageName, color = TextMuted, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(request.reason, color = AlertRed)
+                        Text("Age: ${formatAge(request.createdAt)}", color = TextMuted, style = MaterialTheme.typography.labelMedium)
                         Text("Requested: ${formatTimestamp(request.createdAt)}", color = TextMuted, style = MaterialTheme.typography.labelMedium)
                         Text("Expires: ${formatTimestamp(request.expiresAt)}", color = TextMuted, style = MaterialTheme.typography.labelMedium)
+                        Text("Approval: ${unlockApprovalLabel(request)}", color = TextMuted, style = MaterialTheme.typography.labelMedium)
                     }
                 }
                 Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1606,12 +2087,253 @@ private fun SecurityTab(
                         Spacer(Modifier.width(8.dp))
                         Text("Deny")
                     }
-                    Button(onClick = { onApproveUnlock(request) }, colors = ButtonDefaults.buttonColors(containerColor = ActionBlue), modifier = Modifier.weight(1f)) {
+                    Button(
+                        onClick = {
+                            onApproveUnlock(
+                                request,
+                                PolicyConstants.UNLOCK_APPROVAL_ONE_VISIT,
+                                null
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ActionBlue),
+                        modifier = Modifier.weight(1f)
+                    ) {
                         Icon(Icons.Outlined.Check, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Approve")
+                        Text("One Visit")
                     }
                 }
+                Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = {
+                            onApproveUnlock(
+                                request,
+                                PolicyConstants.UNLOCK_APPROVAL_TIMED,
+                                PolicyConstants.UNLOCK_15_MINUTES_MS
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GuardNavy),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("15 Minutes")
+                    }
+                    Button(
+                        onClick = {
+                            onApproveUnlock(
+                                request,
+                                PolicyConstants.UNLOCK_APPROVAL_TIMED,
+                                PolicyConstants.UNLOCK_30_MINUTES_MS
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GuardNavy),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("30 Minutes")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModesCard(
+    apps: Map<String, ParentApp>,
+    modes: List<ParentMode>,
+    activeMode: ActiveMode,
+    expandedModeId: String?,
+    newModeName: String,
+    onNewModeNameChange: (String) -> Unit,
+    onCreateMode: () -> Unit,
+    onToggleMode: (String) -> Unit,
+    onRenameMode: (String, String) -> Unit,
+    onDeleteMode: (ParentMode) -> Unit,
+    onSetActiveMode: (ParentMode?) -> Unit,
+    onUpdateModePolicy: (String, String, ParentPolicy) -> Unit
+) {
+    GuardCard {
+        Text("One-Tap Modes", style = MaterialTheme.typography.titleLarge, color = GuardNavy, fontWeight = FontWeight.Bold)
+        Text("Create named policy sets. When a mode is active, listed apps use the mode rules and unlisted apps are allowed.", color = TextMuted, modifier = Modifier.padding(top = 6.dp))
+        Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            GuardTextField(
+                value = newModeName,
+                onValueChange = onNewModeNameChange,
+                label = "New mode name",
+                placeholder = "Study time",
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = onCreateMode,
+                colors = ButtonDefaults.buttonColors(containerColor = GuardNavy),
+                modifier = Modifier.height(58.dp)
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Create")
+            }
+        }
+        if (modes.isEmpty()) {
+            Text("No custom modes yet.", color = TextMuted, modifier = Modifier.padding(top = 14.dp))
+            return@GuardCard
+        }
+        Column(Modifier.padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            modes.forEach { mode ->
+                ModeSummaryRow(
+                    apps = apps,
+                    mode = mode,
+                    expanded = expandedModeId == mode.modeId,
+                    active = activeMode.modeId == mode.modeId,
+                    onToggleMode = onToggleMode,
+                    onRenameMode = onRenameMode,
+                    onDeleteMode = onDeleteMode,
+                    onSetActiveMode = onSetActiveMode,
+                    onUpdateModePolicy = onUpdateModePolicy
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeSummaryRow(
+    apps: Map<String, ParentApp>,
+    mode: ParentMode,
+    expanded: Boolean,
+    active: Boolean,
+    onToggleMode: (String) -> Unit,
+    onRenameMode: (String, String) -> Unit,
+    onDeleteMode: (ParentMode) -> Unit,
+    onSetActiveMode: (ParentMode?) -> Unit,
+    onUpdateModePolicy: (String, String, ParentPolicy) -> Unit
+) {
+    var renameText by remember(mode.modeId, mode.name) { mutableStateOf(mode.name) }
+    val lockedCount = mode.appPolicies.values.count { it.manualBlocked }
+    val limitCount = mode.appPolicies.values.count { it.dailyLimitMinutes != null }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (active) SurfaceTint else SurfaceLight)
+            .border(1.dp, if (active) ActionBlue.copy(alpha = 0.45f) else OutlineSoft, RoundedCornerShape(10.dp))
+            .clickable { onToggleMode(mode.modeId) }
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                Modifier
+                    .weight(1f)
+                    .clickable { onToggleMode(mode.modeId) }
+                    .padding(end = 10.dp)
+            ) {
+                Text(mode.name, color = GuardNavy, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    "${lockedCount} locked · ${limitCount} limits",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+            StatusLabel(if (expanded) "Open" else "Closed", if (expanded) ActionBlue else OutlineSoft)
+            Spacer(Modifier.width(10.dp))
+            Switch(
+                checked = active,
+                onCheckedChange = { enabled ->
+                    onSetActiveMode(if (enabled) mode else null)
+                }
+            )
+        }
+        if (expanded) {
+            Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                GuardTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    label = "Mode name",
+                    placeholder = "Mode name",
+                    modifier = Modifier.weight(1f)
+                )
+                Button(onClick = { onRenameMode(mode.modeId, renameText) }, colors = ButtonDefaults.buttonColors(containerColor = GuardNavy), modifier = Modifier.height(58.dp)) {
+                    Text("Save")
+                }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onDeleteMode(mode) }, modifier = Modifier.weight(1f)) {
+                    Text("Delete")
+                }
+            }
+            Text("Mode App Rules", color = GuardNavy, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp))
+            apps.values
+                .filter { it.blockable }
+                .sortedBy { it.label.lowercase() }
+                .forEach { app ->
+                    ModeAppPolicyRow(
+                        modeId = mode.modeId,
+                        app = app,
+                        policy = mode.appPolicies[app.packageName] ?: ParentPolicy(),
+                        onUpdateModePolicy = onUpdateModePolicy
+                    )
+                }
+        }
+    }
+}
+
+@Composable
+private fun ModeAppPolicyRow(
+    modeId: String,
+    app: ParentApp,
+    policy: ParentPolicy,
+    onUpdateModePolicy: (String, String, ParentPolicy) -> Unit
+) {
+    var limitText by remember(modeId, app.packageName, policy.dailyLimitMinutes) {
+        mutableStateOf(policy.dailyLimitMinutes?.toString().orEmpty())
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceLight)
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(app.label, color = GuardNavy, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(app.packageName, color = TextMuted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Switch(
+                checked = !policy.manualBlocked,
+                onCheckedChange = { allowed ->
+                    onUpdateModePolicy(modeId, app.packageName, policy.copy(manualBlocked = !allowed))
+                }
+            )
+        }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                limitText,
+                { limitText = it.filter(Char::isDigit).take(4) },
+                label = { Text("Mode daily limit") },
+                suffix = { Text("min") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                onClick = {
+                    onUpdateModePolicy(
+                        modeId,
+                        app.packageName,
+                        policy.copy(dailyLimitMinutes = limitText.toIntOrNull()?.takeIf { it > 0 })
+                    )
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = GuardNavy)
+            ) {
+                Text("Save")
+            }
+            OutlinedButton(
+                enabled = policy.dailyLimitMinutes != null,
+                onClick = {
+                    limitText = ""
+                    onUpdateModePolicy(modeId, app.packageName, policy.copy(dailyLimitMinutes = null))
+                }
+            ) {
+                Text("Clear")
             }
         }
     }
@@ -1687,4 +2409,24 @@ private fun Panel(title: String, content: @Composable ColumnScope.() -> Unit) {
 private fun formatTimestamp(value: Long?): String {
     if (value == null || value <= 0L) return "unknown"
     return SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()).format(Date(value))
+}
+
+private fun formatAge(value: Long?): String {
+    if (value == null || value <= 0L) return "unknown"
+    val minutes = ((System.currentTimeMillis() - value).coerceAtLeast(0L) / 60_000L).coerceAtLeast(0L)
+    return when {
+        minutes < 1L -> "just now"
+        minutes == 1L -> "1 min"
+        minutes < 60L -> "$minutes mins"
+        else -> "${minutes / 60L}h ${minutes % 60L}m"
+    }
+}
+
+private fun unlockApprovalLabel(request: UnlockRequest): String {
+    if (request.status == PolicyConstants.UNLOCK_PENDING) return "waiting"
+    return when (request.approvalType) {
+        PolicyConstants.UNLOCK_APPROVAL_TIMED -> "${(request.approvalDurationMs ?: 0L) / 60_000L} minutes"
+        PolicyConstants.UNLOCK_APPROVAL_ONE_VISIT, null -> "one visit"
+        else -> request.approvalType
+    }
 }

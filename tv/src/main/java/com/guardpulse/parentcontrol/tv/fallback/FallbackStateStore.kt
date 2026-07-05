@@ -103,6 +103,14 @@ class FallbackStateStore(context: Context) {
 
     fun lastForeground(): String? = prefs.getString("lastForeground", null)
 
+    fun saveSafeMode(until: Long) {
+        prefs.edit().putLong("safeModeUntil", until).apply()
+    }
+
+    fun safeModeUntil(): Long = prefs.getLong("safeModeUntil", 0L)
+
+    fun isSafeModeActive(): Boolean = safeModeUntil() > System.currentTimeMillis()
+
     fun shouldReportTamper(type: String): Boolean {
         val key = "tamper:$type"
         val now = System.currentTimeMillis()

@@ -44,6 +44,7 @@ object FallbackProtection {
         settingsSection: ProtectedSettingsSection? = null
     ): FallbackDecision {
         if (foregroundPackage == context.packageName) return FallbackDecision(false)
+        if (fallbackStore.isSafeModeActive()) return FallbackDecision(false)
 
         if (settingsSection != null &&
             isSettingsSectionLockEnabled(settingsSection.policyPackage, policies, dailyBlocks) &&
@@ -79,7 +80,8 @@ object FallbackProtection {
         }
 
         val policy = effectivePolicy(policyPackage, policies)
-        val policyBlocked = policy.manualBlocked || policyPackage in dailyBlocks
+        val policyBlocked = policy.manualBlocked ||
+            (policy.dailyLimitMinutes != null && policyPackage in dailyBlocks)
 
         if (sourcePolicyPackage != null) {
             if (!policyBlocked) return FallbackDecision(false)

@@ -61,6 +61,8 @@ class LockActivity : Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val policyChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "policies" ||
+            key == "safeModeUntil" ||
+            key == "activeModeId" ||
             key?.startsWith("dailyBlocks:") == true ||
             key?.startsWith("usageOffsets:") == true
         ) {
@@ -395,6 +397,10 @@ class LockActivity : Activity() {
 
     private fun finishIfNoLongerBlocked() {
         if (isSetupGate() || !::localPolicyStore.isInitialized) return
+        if (fallbackStore.isSafeModeActive()) {
+            finishAndReturnToUnlockedTarget()
+            return
+        }
         if (isSettingsSectionGate()) {
             if (!FallbackProtection.isSettingsSectionLockEnabled(
                     packageNameToUnlock,
@@ -448,6 +454,7 @@ class LockActivity : Activity() {
 
     private fun finishIfRemotePolicyAllows(snapshot: DataSnapshot) {
         if (isSetupGate()) return
+        if (localPolicyStore.activeModeId() != null) return
         val manualBlocked = snapshot.child("manualBlocked").getValue(Boolean::class.java)
         val explicitAllow = snapshot.exists() && manualBlocked == false
         val policyMissingAndAllowedByDefault = !snapshot.exists() &&
@@ -529,7 +536,7 @@ class LockActivity : Activity() {
                     PolicyConstants.UNLOCK_APPROVED -> {
                         unlockRequestListener?.let { ref.removeEventListener(it) }
                         unlockRequestListener = null
-                        grantApprovedUnlock()
+                        grantApprovedUnlock(snapshot)
                         finishAndReturnToUnlockedTarget()
                     }
                     PolicyConstants.UNLOCK_DENIED -> statusText?.text = "Parent denied unlock"
@@ -564,7 +571,19 @@ class LockActivity : Activity() {
     private fun isSetupGate(): Boolean = packageNameToUnlock == packageName
     private fun isSettingsSectionGate(): Boolean = reason == PolicyConstants.BLOCK_REASON_SETTINGS_SECTION
 
-    private fun grantApprovedUnlock() {
+    private fun grantApprovedUnlock(snapshot: DataSnapshot? = null) {
+        val approvalType = snapshot?.child("approvalType")?.getValue(String::class.java)
+            ?: PolicyConstants.UNLOCK_APPROVAL_ONE_VISIT
+        val approvalDurationMs = snapshot?.child("approvalDurationMs")?.getValue(Long::class.java)
+        if (!isSettingsSectionGate() &&
+            !isSetupGate() &&
+            approvalType == PolicyConstants.UNLOCK_APPROVAL_TIMED &&
+            approvalDurationMs != null &&
+            approvalDurationMs > 0
+        ) {
+            fallbackStore.grantTemporaryUnlock(packageNameToUnlock, approvalDurationMs)
+            return
+        }
         if (isSettingsSectionGate()) {
             settingsSectionKey?.let(fallbackStore::grantSettingsSectionUnlock)
         } else if (isSetupGate()) {

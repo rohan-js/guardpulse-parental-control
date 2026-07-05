@@ -85,6 +85,25 @@ class LocalPolicyStore(context: Context) {
         prefs.edit().putString(key, json.toString()).apply()
     }
 
+    fun saveActiveMode(modeId: String?, modeName: String?) {
+        prefs.edit()
+            .putString("activeModeId", modeId)
+            .putString("activeModeName", modeName)
+            .apply()
+    }
+
+    fun activeModeId(): String? = prefs.getString("activeModeId", null)
+
+    fun activeModeName(): String? = prefs.getString("activeModeName", null)
+
+    fun saveSafeMode(until: Long) {
+        prefs.edit().putLong("safeModeUntil", until).apply()
+    }
+
+    fun safeModeUntil(): Long = prefs.getLong("safeModeUntil", 0L)
+
+    fun isSafeModeActive(): Boolean = safeModeUntil() > System.currentTimeMillis()
+
     fun registerChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
         prefs.registerOnSharedPreferenceChangeListener(listener)
     }

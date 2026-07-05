@@ -81,19 +81,169 @@ class ParentRepository(
         deviceId: String,
         request: UnlockRequest,
         status: String,
+        approvalType: String? = null,
+        approvalDurationMs: Long? = null,
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        database.child(FirebasePaths.deviceUnlockRequest(deviceId, request.requestId)).updateChildren(
+        val value = mutableMapOf<String, Any?>(
+            "status" to status,
+            "updatedAt" to ServerValue.TIMESTAMP,
+            "updatedBy" to auth.currentUser?.uid
+        )
+        if (approvalType != null) value["approvalType"] = approvalType
+        if (approvalDurationMs != null) value["approvalDurationMs"] = approvalDurationMs
+        database.child(FirebasePaths.deviceUnlockRequest(deviceId, request.requestId)).updateChildren(value)
+            .addOnSuccessListener {
+            onSuccess()
+        }.addOnFailureListener { error ->
+            onError(error.message ?: "Unlock update failed")
+        }
+    }
+
+    fun createMode(
+        deviceId: String,
+        name: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val modeRef = database.child(FirebasePaths.devicePolicyModes(deviceId)).push()
+        val modeId = modeRef.key ?: run {
+            onError("Could not create mode")
+            return
+        }
+        modeRef.setValue(
             mapOf(
-                "status" to status,
+                "modeId" to modeId,
+                "name" to name,
+                "createdAt" to ServerValue.TIMESTAMP,
                 "updatedAt" to ServerValue.TIMESTAMP,
                 "updatedBy" to auth.currentUser?.uid
             )
         ).addOnSuccessListener {
             onSuccess()
         }.addOnFailureListener { error ->
-            onError(error.message ?: "Unlock update failed")
+            onError(error.message ?: "Mode create failed")
+        }
+    }
+
+    fun updateModeName(
+        deviceId: String,
+        modeId: String,
+        name: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        database.child(FirebasePaths.devicePolicyMode(deviceId, modeId)).updateChildren(
+            mapOf(
+                "name" to name,
+                "updatedAt" to ServerValue.TIMESTAMP,
+                "updatedBy" to auth.currentUser?.uid
+            )
+        ).addOnSuccessListener {
+            onSuccess()
+        }.addOnFailureListener { error ->
+            onError(error.message ?: "Mode update failed")
+        }
+    }
+
+    fun updateModePolicy(
+        deviceId: String,
+        modeId: String,
+        packageName: String,
+        policy: ParentPolicy,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val value = mutableMapOf<String, Any?>(
+            "packageName" to packageName,
+            "manualBlocked" to policy.manualBlocked,
+            "updatedAt" to ServerValue.TIMESTAMP
+        )
+        policy.dailyLimitMinutes?.let { value["dailyLimitMinutes"] = it }
+        database.child(FirebasePaths.devicePolicyModeApp(deviceId, modeId, packageName))
+            .setValue(value)
+            .addOnSuccessListener { onSuccess() }
+            .addOnFailureListener { onError(it.message ?: "Mode policy update failed") }
+    }
+
+    fun deleteMode(
+        deviceId: String,
+        modeId: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        database.updateChildren(
+            mapOf<String, Any?>(
+                FirebasePaths.devicePolicyMode(deviceId, modeId) to null,
+                FirebasePaths.devicePolicyActiveMode(deviceId) to null
+            )
+        )
+            .addOnSuccessListener { onSuccess() }
+            .addOnFailureListener { onError(it.message ?: "Mode delete failed") }
+    }
+
+    fun setActiveMode(
+        deviceId: String,
+        mode: ParentMode?,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val ref = database.child(FirebasePaths.devicePolicyActiveMode(deviceId))
+        val task = if (mode == null) {
+            ref.removeValue()
+        } else {
+            ref.setValue(
+                mapOf(
+                    "modeId" to mode.modeId,
+                    "modeName" to mode.name,
+                    "activatedAt" to ServerValue.TIMESTAMP,
+                    "updatedBy" to auth.currentUser?.uid
+                )
+            )
+        }
+        task.addOnSuccessListener { onSuccess() }
+            .addOnFailureListener { onError(it.message ?: "Mode activation failed") }
+    }
+
+    fun startSafeMode(
+        deviceId: String,
+        durationMinutes: Int,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val now = System.currentTimeMillis()
+        val durationMs = durationMinutes.coerceIn(1, 1440) * 60_000L
+        database.child(FirebasePaths.deviceSecuritySafeMode(deviceId)).setValue(
+            mapOf(
+                "enabled" to true,
+                "until" to now + durationMs,
+                "startedAt" to ServerValue.TIMESTAMP,
+                "startedBy" to auth.currentUser?.uid
+            )
+        ).addOnSuccessListener {
+            onSuccess()
+        }.addOnFailureListener { error ->
+            onError(error.message ?: "Safe Mode failed")
+        }
+    }
+
+    fun stopSafeMode(
+        deviceId: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        database.child(FirebasePaths.deviceSecuritySafeMode(deviceId)).setValue(
+            mapOf(
+                "enabled" to false,
+                "until" to 0L,
+                "updatedAt" to ServerValue.TIMESTAMP,
+                "updatedBy" to auth.currentUser?.uid
+            )
+        ).addOnSuccessListener {
+            onSuccess()
+        }.addOnFailureListener { error ->
+            onError(error.message ?: "Safe Mode deactivation failed")
         }
     }
 

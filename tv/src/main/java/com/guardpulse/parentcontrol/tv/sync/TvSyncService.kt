@@ -41,6 +41,12 @@ import com.guardpulse.parentcontrol.tv.policy.LocalPolicyStore
 import com.guardpulse.parentcontrol.tv.system.BackgroundRestrictionStatus
 import com.guardpulse.parentcontrol.tv.usage.UsageTracker
 
+private data class ModePolicy(
+    val modeId: String,
+    val name: String,
+    val appPolicies: Map<String, AppPolicy>
+)
+
 class TvSyncService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var deviceId: String
@@ -56,6 +62,11 @@ class TvSyncService : Service() {
     private var listenersAttached = false
     private var authRetryDelayMs = 5_000L
     private var lastSyncError: String? = null
+    private var basePolicies: Map<String, AppPolicy> = emptyMap()
+    private var modes: Map<String, ModePolicy> = emptyMap()
+    private var activeModeId: String? = null
+    private var activeModeName: String? = null
+    private var safeModeUntil: Long = 0L
     private val valueListeners = mutableListOf<Pair<DatabaseReference, ValueEventListener>>()
     private val childListeners = mutableListOf<Pair<DatabaseReference, ChildEventListener>>()
     private val retryFirebaseRunnable = Runnable {
@@ -72,6 +83,11 @@ class TvSyncService : Service() {
         usageTracker = UsageTracker(this)
         pairingManager = PairingManager(this)
         fallbackStore = FallbackStateStore(this)
+        basePolicies = localPolicyStore.loadPolicies()
+        activeModeId = localPolicyStore.activeModeId()
+        activeModeName = localPolicyStore.activeModeName()
+        safeModeUntil = localPolicyStore.safeModeUntil()
+        fallbackStore.saveSafeMode(safeModeUntil)
 
         startForeground(NOTIFICATION_ID, buildNotification("Sync service starting"))
         policyController.applyHardening()
@@ -145,6 +161,9 @@ class TvSyncService : Service() {
         listenersAttached = true
         attachPairingListener()
         attachPolicyListener()
+        attachModesListener()
+        attachActiveModeListener()
+        attachSafeModeListener()
         attachSecurityListener()
         attachCommandListener()
     }
@@ -262,12 +281,94 @@ class TvSyncService : Service() {
                             ?.takeIf { it > 0 }
                         packageName to AppPolicy(manualBlocked, limit)
                     }.toMap()
-                    localPolicyStore.savePolicies(policies)
+                    basePolicies = policies
+                    saveEffectivePolicies()
                     applyPoliciesAndUpload()
                 }
 
                 override fun onCancelled(error: DatabaseError) {
                     recordSyncError("Policy listener cancelled: ${error.message}")
+                }
+            }
+        )
+    }
+
+    private fun attachModesListener() {
+        val ref = db?.child(FirebasePaths.devicePolicyModes(deviceId)) ?: return
+        registerValueListener(
+            ref,
+            object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    modes = snapshot.children.mapNotNull { modeSnapshot ->
+                        val modeId = modeSnapshot.child("modeId").getValue(String::class.java)
+                            ?: modeSnapshot.key
+                            ?: return@mapNotNull null
+                        val name = modeSnapshot.child("name").getValue(String::class.java)
+                            ?.takeIf { it.isNotBlank() }
+                            ?: "Mode"
+                        val appPolicies = modeSnapshot.child("apps").children.mapNotNull appPolicy@{ appSnapshot ->
+                            val packageName = appSnapshot.child("packageName").getValue(String::class.java)
+                                ?: runCatching { PackageKeys.decode(appSnapshot.key.orEmpty()) }.getOrNull()
+                                ?: return@appPolicy null
+                            val manualBlocked = appSnapshot.child("manualBlocked").getValue(Boolean::class.java) ?: false
+                            val limit = appSnapshot.child("dailyLimitMinutes").getValue(Long::class.java)
+                                ?.toInt()
+                                ?.takeIf { it > 0 }
+                            packageName to AppPolicy(manualBlocked, limit)
+                        }.toMap()
+                        modeId to ModePolicy(modeId, name, appPolicies)
+                    }.toMap()
+                    activeModeName = activeModeId?.let { modes[it]?.name } ?: activeModeName
+                    saveEffectivePolicies()
+                    applyPoliciesAndUpload()
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    recordSyncError("Modes listener cancelled: ${error.message}")
+                }
+            }
+        )
+    }
+
+    private fun attachActiveModeListener() {
+        val ref = db?.child(FirebasePaths.devicePolicyActiveMode(deviceId)) ?: return
+        registerValueListener(
+            ref,
+            object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    activeModeId = snapshot.child("modeId").getValue(String::class.java)?.takeIf { it.isNotBlank() }
+                    activeModeName = snapshot.child("modeName").getValue(String::class.java)
+                        ?: activeModeId?.let { modes[it]?.name }
+                    localPolicyStore.saveActiveMode(activeModeId, activeModeName)
+                    saveEffectivePolicies()
+                    applyPoliciesAndUpload()
+                    updateSecurityRuntime()
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    recordSyncError("Active mode listener cancelled: ${error.message}")
+                }
+            }
+        )
+    }
+
+    private fun attachSafeModeListener() {
+        val ref = db?.child(FirebasePaths.deviceSecuritySafeMode(deviceId)) ?: return
+        registerValueListener(
+            ref,
+            object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val enabled = snapshot.child("enabled").getValue(Boolean::class.java) ?: false
+                    val until = snapshot.child("until").getValue(Long::class.java) ?: 0L
+                    safeModeUntil = if (enabled && until > System.currentTimeMillis()) until else 0L
+                    localPolicyStore.saveSafeMode(safeModeUntil)
+                    fallbackStore.saveSafeMode(safeModeUntil)
+                    applyPoliciesAndUpload()
+                    updateSecurityRuntime()
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    recordSyncError("Safe Mode listener cancelled: ${error.message}")
                 }
             }
         )
@@ -383,6 +484,7 @@ class TvSyncService : Service() {
         val vpnStatus = NetworkFilterController.refreshPreparedStatus(this)
         val backgroundUnrestricted = BackgroundRestrictionStatus.isBatteryUnrestricted(this)
         val pinConfigured = fallbackStore.loadPin() != null
+        val safeModeActive = fallbackStore.isSafeModeActive()
         val protectionHealthy = mode == PolicyConstants.ENFORCEMENT_DEVICE_OWNER ||
             ((!adminSetupAvailable || policyController.isAdminActive()) &&
                 accessibility &&
@@ -399,7 +501,10 @@ class TvSyncService : Service() {
             "backgroundUnrestricted" to backgroundUnrestricted,
             "deviceOwner" to policyController.isDeviceOwner(),
             "enforcementMode" to mode,
-            "protectionHealthy" to protectionHealthy
+            "protectionHealthy" to protectionHealthy,
+            "safeModeActive" to safeModeActive,
+            "activeModeId" to activeModeId,
+            "activeModeName" to activeModeName
         )
         db?.child(FirebasePaths.deviceHeartbeat(deviceId))?.updateChildren(heartbeat)
         pairingManager.pairedParentUid()?.let { parentUid ->
@@ -427,6 +532,7 @@ class TvSyncService : Service() {
         val mode = FallbackProtection.enforcementMode(this)
         val vpnStatus = NetworkFilterController.refreshPreparedStatus(this)
         val backgroundUnrestricted = BackgroundRestrictionStatus.isBatteryUnrestricted(this)
+        val safeModeActive = fallbackStore.isSafeModeActive()
         db?.child(FirebasePaths.deviceSecurityRuntime(deviceId))?.updateChildren(
             mapOf(
                 "enforcementMode" to mode,
@@ -450,6 +556,10 @@ class TvSyncService : Service() {
                             fallbackStore.loadPin() != null)
                     ),
                 "lastForegroundPackage" to fallbackStore.lastForeground(),
+                "safeModeActive" to safeModeActive,
+                "safeModeUntil" to fallbackStore.safeModeUntil().takeIf { it > 0L },
+                "activeModeId" to activeModeId,
+                "activeModeName" to activeModeName,
                 "lastSyncError" to lastSyncError,
                 "updatedAt" to ServerValue.TIMESTAMP
             )
@@ -482,6 +592,8 @@ class TvSyncService : Service() {
     }
 
     private fun applyPoliciesAndUpload(apps: List<TvInstalledApp> = inventoryProvider.listLaunchableApps()) {
+        expireSafeModeIfNeeded()
+        saveEffectivePolicies()
         val policies = localPolicyStore.loadPolicies()
         val usage = usageTracker.usageMinutesToday()
         val usageOffsets = localPolicyStore.loadUsageOffsets()
@@ -510,7 +622,7 @@ class TvSyncService : Service() {
                     dailyLimitMinutes = policy.dailyLimitMinutes
                 ),
                 usageMinutesToday = usageMinutes,
-                alreadyDailyBlocked = app.packageName in dailyBlocks
+                alreadyDailyBlocked = app.packageName in dailyBlocks && policy.dailyLimitMinutes != null
             )
             if (decision.dailyLimitBlocked) {
                 dailyBlocks.add(app.packageName)
@@ -545,8 +657,11 @@ class TvSyncService : Service() {
                 app.packageName !in PolicyConstants.sourceLockPackages &&
                 app.packageName !in PolicyConstants.primarySettingsPackages &&
                 app.packageName != packageName
-            val lockBlocked = riskySettingsLocked || sourceLocked || settingsSectionLocked || normalAppLocked
+            val safeModeActive = fallbackStore.isSafeModeActive()
+            val lockBlocked = !safeModeActive &&
+                (riskySettingsLocked || sourceLocked || settingsSectionLocked || normalAppLocked)
             val lockReason = when {
+                safeModeActive -> null
                 sourceLocked -> PolicyConstants.BLOCK_REASON_SOURCE_LOCK
                 settingsSectionLocked -> PolicyConstants.BLOCK_REASON_SETTINGS_SECTION
                 riskySettingsLocked -> PolicyConstants.BLOCK_REASON_RISKY_SETTINGS
@@ -597,6 +712,32 @@ class TvSyncService : Service() {
             AppPolicy(manualBlocked = true)
         } else {
             AppPolicy()
+        }
+    }
+
+    private fun saveEffectivePolicies() {
+        localPolicyStore.savePolicies(effectivePolicies())
+        localPolicyStore.saveActiveMode(activeModeId, activeModeName)
+        localPolicyStore.saveSafeMode(safeModeUntil)
+        fallbackStore.saveSafeMode(safeModeUntil)
+    }
+
+    private fun effectivePolicies(): Map<String, AppPolicy> {
+        val modeId = activeModeId
+        val activeMode = if (modeId.isNullOrBlank()) null else modes[modeId]
+        if (activeMode == null) return basePolicies
+        val merged = activeMode.appPolicies.toMutableMap()
+        PolicyConstants.defaultLockedPackages.forEach { packageName ->
+            merged.putIfAbsent(packageName, AppPolicy(manualBlocked = true))
+        }
+        return merged
+    }
+
+    private fun expireSafeModeIfNeeded() {
+        if (safeModeUntil > 0L && safeModeUntil <= System.currentTimeMillis()) {
+            safeModeUntil = 0L
+            localPolicyStore.saveSafeMode(0L)
+            fallbackStore.saveSafeMode(0L)
         }
     }
 

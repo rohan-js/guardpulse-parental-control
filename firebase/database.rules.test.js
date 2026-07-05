@@ -69,6 +69,69 @@ test("parent can write desired policy but not TV state", async () => {
   );
 });
 
+test("parent can manage modes active mode and safe mode", async () => {
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/policy/modes/mode1").set({
+      modeId: "mode1",
+      name: "Study",
+      createdAt: 1,
+      updatedAt: 1,
+      updatedBy: "parentUid",
+      apps: {
+        Y29tLnZpZGVv: {
+          packageName: "com.video",
+          manualBlocked: true,
+          dailyLimitMinutes: 30,
+          updatedAt: 1,
+        },
+      },
+    })
+  );
+
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/policy/activeMode").set({
+      modeId: "mode1",
+      modeName: "Study",
+      activatedAt: 2,
+      updatedBy: "parentUid",
+    })
+  );
+
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/security/safeMode").set({
+      enabled: true,
+      until: 9999999999999,
+      startedAt: 3,
+      startedBy: "parentUid",
+    })
+  );
+
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/security/safeMode").set({
+      enabled: false,
+      until: 0,
+      updatedAt: 4,
+      updatedBy: "parentUid",
+    })
+  );
+});
+
+test("TV and unpaired parents cannot write parent-only controls", async () => {
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/policy/modes/mode1").set({
+      modeId: "mode1",
+      name: "Study",
+    })
+  );
+
+  await assertFails(
+    dbAs("otherParent").ref("devices/tv1/security/safeMode").set({
+      enabled: true,
+      until: 9999999999999,
+    })
+  );
+});
+
 test("TV can write runtime state but not desired policy", async () => {
   await assertSucceeds(
     dbAs("tvUid").ref("devices/tv1/security/runtime").update({
@@ -140,6 +203,40 @@ test("unpaired parent cannot approve unlock request", async () => {
       status: "approved",
       updatedAt: 2,
       updatedBy: "otherParent",
+    })
+  );
+});
+
+test("paired parent can choose unlock approval type and invalid duration is rejected", async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.database();
+    await db.ref("devices/tv1/unlockRequests/request1").set({
+      requestId: "request1",
+      packageName: "com.video",
+      reason: "manual",
+      status: "pending",
+      createdAt: 1,
+      expiresAt: 9999999999999,
+    });
+  });
+
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/unlockRequests/request1").update({
+      status: "approved",
+      approvalType: "timed",
+      approvalDurationMs: 900000,
+      updatedAt: 2,
+      updatedBy: "parentUid",
+    })
+  );
+
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/unlockRequests/request1").update({
+      status: "approved",
+      approvalType: "timed",
+      approvalDurationMs: 120000,
+      updatedAt: 3,
+      updatedBy: "parentUid",
     })
   );
 });

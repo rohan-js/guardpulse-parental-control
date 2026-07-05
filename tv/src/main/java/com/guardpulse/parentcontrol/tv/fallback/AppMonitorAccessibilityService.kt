@@ -22,8 +22,16 @@ class AppMonitorAccessibilityService : AccessibilityService() {
     private var lastLockedKey: String? = null
     private var lastLockAt = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val foregroundPollRunnable = object : Runnable {
+        override fun run() {
+            evaluateCurrentWindow()
+            mainHandler.postDelayed(this, FOREGROUND_RECHECK_MS)
+        }
+    }
     private val policyChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "policies" ||
+            key == "safeModeUntil" ||
+            key == "activeModeId" ||
             key?.startsWith("dailyBlocks:") == true ||
             key?.startsWith("usageOffsets:") == true
         ) {
@@ -36,6 +44,7 @@ class AppMonitorAccessibilityService : AccessibilityService() {
         fallbackStore = FallbackStateStore(this)
         localPolicyStore.registerChangeListener(policyChangeListener)
         runCatching { TvServiceStarter.start(this) }
+        mainHandler.post(foregroundPollRunnable)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -162,4 +171,8 @@ class AppMonitorAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() = Unit
+
+    companion object {
+        private const val FOREGROUND_RECHECK_MS = 1_000L
+    }
 }

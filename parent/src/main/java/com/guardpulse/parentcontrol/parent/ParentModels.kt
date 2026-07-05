@@ -23,6 +23,31 @@ data class ParentPolicy(
     val dailyLimitMinutes: Int? = null
 )
 
+data class ParentMode(
+    val modeId: String,
+    val name: String,
+    val appPolicies: Map<String, ParentPolicy> = emptyMap(),
+    val createdAt: Long? = null,
+    val updatedAt: Long? = null
+)
+
+data class ActiveMode(
+    val modeId: String? = null,
+    val modeName: String? = null,
+    val activatedAt: Long? = null
+)
+
+data class SafeModeState(
+    val enabled: Boolean = false,
+    val until: Long? = null,
+    val startedAt: Long? = null,
+    val startedBy: String? = null
+) {
+    fun isActive(now: Long = System.currentTimeMillis()): Boolean {
+        return enabled && (until ?: 0L) > now
+    }
+}
+
 data class ParentState(
     val suspended: Boolean = false,
     val requestedSuspended: Boolean = false,
@@ -56,7 +81,11 @@ data class SecurityRuntime(
     val pinConfigured: Boolean = false,
     val protectionHealthy: Boolean = false,
     val lastForegroundPackage: String? = null,
-    val lastSyncError: String? = null
+    val lastSyncError: String? = null,
+    val safeModeActive: Boolean = false,
+    val safeModeUntil: Long? = null,
+    val activeModeId: String? = null,
+    val activeModeName: String? = null
 )
 
 data class UnlockRequest(
@@ -65,7 +94,10 @@ data class UnlockRequest(
     val reason: String,
     val status: String,
     val createdAt: Long?,
-    val expiresAt: Long?
+    val expiresAt: Long?,
+    val updatedAt: Long? = null,
+    val approvalType: String? = null,
+    val approvalDurationMs: Long? = null
 )
 
 data class TamperEvent(

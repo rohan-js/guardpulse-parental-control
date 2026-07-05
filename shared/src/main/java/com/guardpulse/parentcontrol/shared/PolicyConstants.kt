@@ -37,6 +37,8 @@ object PolicyConstants {
     const val UNLOCK_APPROVED = "approved"
     const val UNLOCK_DENIED = "denied"
     const val UNLOCK_EXPIRED = "expired"
+    const val UNLOCK_APPROVAL_ONE_VISIT = "oneVisit"
+    const val UNLOCK_APPROVAL_TIMED = "timed"
 
     const val TAMPER_ADMIN_DISABLE_REQUESTED = "adminDisableRequested"
     const val TAMPER_ADMIN_DISABLED = "adminDisabled"
@@ -49,6 +51,9 @@ object PolicyConstants {
     const val USAGE_SCAN_INTERVAL_MS = 60_000L
     const val PAIRING_TTL_MS = 10 * 60_000L
     const val TEMP_UNLOCK_MS = 10 * 60_000L
+    const val UNLOCK_15_MINUTES_MS = 15 * 60_000L
+    const val UNLOCK_30_MINUTES_MS = 30 * 60_000L
+    const val SAFE_MODE_DURATION_MS = 30 * 60_000L
     const val TAMPER_EVENT_THROTTLE_MS = 15 * 60_000L
 
     val sourceLockPackages = setOf(

@@ -12,6 +12,8 @@ object FirebaseContracts {
     const val FIELD_CREATED_AT = "createdAt"
     const val FIELD_EXPIRES_AT = "expiresAt"
     const val FIELD_REASON = "reason"
+    const val FIELD_APPROVAL_TYPE = "approvalType"
+    const val FIELD_APPROVAL_DURATION_MS = "approvalDurationMs"
 
     const val MAX_DAILY_LIMIT_MINUTES = 24 * 60
     const val PIN_LENGTH = 6
@@ -30,6 +32,16 @@ object FirebaseContracts {
         PolicyConstants.UNLOCK_APPROVED,
         PolicyConstants.UNLOCK_DENIED,
         PolicyConstants.UNLOCK_EXPIRED
+    )
+
+    val unlockApprovalTypes = setOf(
+        PolicyConstants.UNLOCK_APPROVAL_ONE_VISIT,
+        PolicyConstants.UNLOCK_APPROVAL_TIMED
+    )
+
+    val timedUnlockDurationsMs = setOf(
+        PolicyConstants.UNLOCK_15_MINUTES_MS,
+        PolicyConstants.UNLOCK_30_MINUTES_MS
     )
 
     val enforcementModes = setOf(
