@@ -15,12 +15,17 @@ import com.guardpulse.parentcontrol.shared.FirebasePaths
 import com.guardpulse.parentcontrol.shared.PolicyConstants
 import com.guardpulse.parentcontrol.tv.policy.LocalPolicyStore
 import com.guardpulse.parentcontrol.tv.system.TvServiceStarter
+import com.guardpulse.parentcontrol.tv.sync.TvSyncService
+import com.guardpulse.parentcontrol.tv.usage.UsageTracker
 
 class AppMonitorAccessibilityService : AccessibilityService() {
     private lateinit var localPolicyStore: LocalPolicyStore
     private lateinit var fallbackStore: FallbackStateStore
+    private lateinit var usageTracker: UsageTracker
     private var lastLockedKey: String? = null
     private var lastLockAt = 0L
+    private var lastLiveLimitCheckAt = 0L
+    private var lastLiveLimitCheckPackage: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val foregroundPollRunnable = object : Runnable {
         override fun run() {
@@ -42,6 +47,7 @@ class AppMonitorAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         localPolicyStore = LocalPolicyStore(this)
         fallbackStore = FallbackStateStore(this)
+        usageTracker = UsageTracker(this)
         localPolicyStore.registerChangeListener(policyChangeListener)
         runCatching { TvServiceStarter.start(this) }
         mainHandler.post(foregroundPollRunnable)
@@ -79,6 +85,7 @@ class AppMonitorAccessibilityService : AccessibilityService() {
         root: AccessibilityNodeInfo?
     ) {
         fallbackStore.saveLastForeground(packageName)
+        trackLiveForeground(packageName)
         clearSetupVisitUnlockIfLeft(packageName)
         clearAppVisitUnlockIfLeft(packageName)
         val settingsSection = SettingsSectionDetector.detect(
@@ -94,11 +101,15 @@ class AppMonitorAccessibilityService : AccessibilityService() {
             fallbackStore.clearSettingsSectionUnlock()
         }
 
+        val policies = localPolicyStore.loadPolicies()
+        val dailyBlocks = localPolicyStore.loadDailyLimitBlocks().toMutableSet()
+        enforceLiveDailyLimit(packageName, policies, dailyBlocks)
+
         val decision = FallbackProtection.shouldLock(
             context = this,
             foregroundPackage = packageName,
-            policies = localPolicyStore.loadPolicies(),
-            dailyBlocks = localPolicyStore.loadDailyLimitBlocks(),
+            policies = policies,
+            dailyBlocks = dailyBlocks,
             fallbackStore = fallbackStore,
             settingsSection = settingsSection
         )
@@ -120,6 +131,55 @@ class AppMonitorAccessibilityService : AccessibilityService() {
             decision.reason ?: PolicyConstants.BLOCK_REASON_MANUAL,
             decision.settingsSectionKey
         )
+    }
+
+    private fun trackLiveForeground(packageName: String) {
+        val usagePackage = usagePolicyPackage(packageName)
+        if (usagePackage == null) {
+            fallbackStore.clearLiveForegroundSession()
+            return
+        }
+        val current = fallbackStore.liveForegroundSession()
+        if (current?.packageName == usagePackage) return
+        val baselineMs = usageTracker.rawUsageMillisToday()[usagePackage] ?: 0L
+        fallbackStore.startLiveForegroundSession(usagePackage, baselineMs)
+    }
+
+    private fun enforceLiveDailyLimit(
+        foregroundPackage: String,
+        policies: Map<String, com.guardpulse.parentcontrol.tv.policy.AppPolicy>,
+        dailyBlocks: MutableSet<String>
+    ) {
+        val usagePackage = usagePolicyPackage(foregroundPackage) ?: return
+        val now = System.currentTimeMillis()
+        if (lastLiveLimitCheckPackage != usagePackage) {
+            lastLiveLimitCheckPackage = usagePackage
+            lastLiveLimitCheckAt = 0L
+        }
+        if (now - lastLiveLimitCheckAt < LIVE_LIMIT_CHECK_MS) return
+        lastLiveLimitCheckAt = now
+        if (usagePackage in dailyBlocks) return
+
+        val limit = policies[usagePackage]?.dailyLimitMinutes ?: return
+        val usageOffset = localPolicyStore.loadUsageOffsets()[usagePackage] ?: 0L
+        val usedMinutes = ((usageTracker.usageMinutesToday(fallbackStore.liveForegroundSession())[usagePackage] ?: 0L) - usageOffset)
+            .coerceAtLeast(0L)
+        if (usedMinutes < limit) return
+
+        localPolicyStore.markDailyLimitBlocked(usagePackage)
+        dailyBlocks.add(usagePackage)
+        runCatching { TvServiceStarter.start(this, TvSyncService.ACTION_RECONCILE) }
+    }
+
+    private fun usagePolicyPackage(packageName: String): String? {
+        val policyPackage = PolicyConstants.sourceLockPolicyPackage(packageName) ?: packageName
+        if (policyPackage == this.packageName) return null
+        if (policyPackage in PolicyConstants.alwaysProtectedPackages &&
+            policyPackage !in PolicyConstants.parentVisibleLockPackages
+        ) {
+            return null
+        }
+        return policyPackage
     }
 
     private fun clearAppVisitUnlockIfLeft(packageName: String) {
@@ -174,5 +234,6 @@ class AppMonitorAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val FOREGROUND_RECHECK_MS = 1_000L
+        private const val LIVE_LIMIT_CHECK_MS = 5_000L
     }
 }

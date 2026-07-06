@@ -1,6 +1,7 @@
 package com.guardpulse.parentcontrol.tv.fallback
 
 import android.content.Context
+import com.guardpulse.parentcontrol.shared.DateKeys
 import com.guardpulse.parentcontrol.shared.PolicyConstants
 import org.json.JSONObject
 
@@ -15,6 +16,13 @@ data class FallbackDecision(
     val reason: String? = null,
     val policyPackage: String? = null,
     val settingsSectionKey: String? = null
+)
+
+data class LiveForegroundSession(
+    val packageName: String,
+    val startedAt: Long,
+    val baselineUsageMs: Long,
+    val dayKey: String
 )
 
 class FallbackStateStore(context: Context) {
@@ -102,6 +110,42 @@ class FallbackStateStore(context: Context) {
     }
 
     fun lastForeground(): String? = prefs.getString("lastForeground", null)
+
+    fun startLiveForegroundSession(
+        packageName: String,
+        baselineUsageMs: Long,
+        startedAt: Long = System.currentTimeMillis(),
+        dayKey: String = DateKeys.today()
+    ) {
+        prefs.edit()
+            .putString("liveForegroundPackage", packageName)
+            .putLong("liveForegroundStartedAt", startedAt)
+            .putLong("liveForegroundBaselineMs", baselineUsageMs.coerceAtLeast(0L))
+            .putString("liveForegroundDay", dayKey)
+            .apply()
+    }
+
+    fun liveForegroundSession(dayKey: String = DateKeys.today()): LiveForegroundSession? {
+        val packageName = prefs.getString("liveForegroundPackage", null)?.takeIf { it.isNotBlank() }
+            ?: return null
+        val sessionDay = prefs.getString("liveForegroundDay", null) ?: return null
+        if (sessionDay != dayKey) return null
+        return LiveForegroundSession(
+            packageName = packageName,
+            startedAt = prefs.getLong("liveForegroundStartedAt", 0L),
+            baselineUsageMs = prefs.getLong("liveForegroundBaselineMs", 0L),
+            dayKey = sessionDay
+        ).takeIf { it.startedAt > 0L }
+    }
+
+    fun clearLiveForegroundSession() {
+        prefs.edit()
+            .remove("liveForegroundPackage")
+            .remove("liveForegroundStartedAt")
+            .remove("liveForegroundBaselineMs")
+            .remove("liveForegroundDay")
+            .apply()
+    }
 
     fun saveSafeMode(until: Long) {
         prefs.edit().putLong("safeModeUntil", until).apply()

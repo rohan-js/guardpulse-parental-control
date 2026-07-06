@@ -417,7 +417,7 @@ class TvSyncService : Service() {
                             PolicyConstants.COMMAND_RESCAN_APPS -> uploadAppInventory()
                             PolicyConstants.COMMAND_RESET_TODAY -> {
                                 val packageName = snapshot.child("packageName").getValue(String::class.java)
-                                val currentUsage = usageTracker.usageMinutesToday()
+                                val currentUsage = usageTracker.usageMinutesToday(fallbackStore.liveForegroundSession())
                                 if (packageName == null) {
                                     localPolicyStore.clearDailyLimitBlocks()
                                     currentUsage.forEach { (pkg, minutes) ->
@@ -595,7 +595,7 @@ class TvSyncService : Service() {
         expireSafeModeIfNeeded()
         saveEffectivePolicies()
         val policies = localPolicyStore.loadPolicies()
-        val usage = usageTracker.usageMinutesToday()
+        val usage = usageTracker.usageMinutesToday(fallbackStore.liveForegroundSession())
         val usageOffsets = localPolicyStore.loadUsageOffsets()
         val dailyBlocks = localPolicyStore.loadDailyLimitBlocks().toMutableSet()
         val states = mutableMapOf<String, Any?>()

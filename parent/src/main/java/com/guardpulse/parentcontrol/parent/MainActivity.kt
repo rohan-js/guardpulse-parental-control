@@ -1284,6 +1284,7 @@ private fun ParentDashboard(
                     selectedDeviceId,
                     loadingDeviceDetails,
                     apps,
+                    states,
                     modes,
                     activeMode,
                     safeMode,
@@ -1811,6 +1812,7 @@ private fun SecurityTab(
     selectedDeviceId: String?,
     loadingDeviceDetails: Boolean,
     apps: Map<String, ParentApp>,
+    states: Map<String, ParentState>,
     modes: List<ParentMode>,
     activeMode: ActiveMode,
     safeMode: SafeModeState,
@@ -1977,6 +1979,7 @@ private fun SecurityTab(
         item {
             ModesCard(
                 apps = apps,
+                states = states,
                 modes = modes,
                 activeMode = activeMode,
                 expandedModeId = expandedModeId,
@@ -2139,6 +2142,7 @@ private fun SecurityTab(
 @Composable
 private fun ModesCard(
     apps: Map<String, ParentApp>,
+    states: Map<String, ParentState>,
     modes: List<ParentMode>,
     activeMode: ActiveMode,
     expandedModeId: String?,
@@ -2180,6 +2184,7 @@ private fun ModesCard(
             modes.forEach { mode ->
                 ModeSummaryRow(
                     apps = apps,
+                    states = states,
                     mode = mode,
                     expanded = expandedModeId == mode.modeId,
                     active = activeMode.modeId == mode.modeId,
@@ -2197,6 +2202,7 @@ private fun ModesCard(
 @Composable
 private fun ModeSummaryRow(
     apps: Map<String, ParentApp>,
+    states: Map<String, ParentState>,
     mode: ParentMode,
     expanded: Boolean,
     active: Boolean,
@@ -2268,6 +2274,7 @@ private fun ModeSummaryRow(
                         modeId = mode.modeId,
                         app = app,
                         policy = mode.appPolicies[app.packageName] ?: ParentPolicy(),
+                        usageMinutesToday = modeUsageMinutes(app.packageName, states),
                         onUpdateModePolicy = onUpdateModePolicy
                     )
                 }
@@ -2280,6 +2287,7 @@ private fun ModeAppPolicyRow(
     modeId: String,
     app: ParentApp,
     policy: ParentPolicy,
+    usageMinutesToday: Long,
     onUpdateModePolicy: (String, String, ParentPolicy) -> Unit
 ) {
     var limitText by remember(modeId, app.packageName, policy.dailyLimitMinutes) {
@@ -2293,6 +2301,10 @@ private fun ModeAppPolicyRow(
             .background(SurfaceLight)
             .padding(12.dp)
     ) {
+        val limitReached = policy.dailyLimitMinutes?.let { usageMinutesToday >= it } == true
+        val usageLabel = policy.dailyLimitMinutes?.let { limit ->
+            "$usageMinutesToday / $limit mins used today"
+        } ?: "$usageMinutesToday mins used today"
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(app.label, color = GuardNavy, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2303,6 +2315,27 @@ private fun ModeAppPolicyRow(
                 onCheckedChange = { allowed ->
                     onUpdateModePolicy(modeId, app.packageName, policy.copy(manualBlocked = !allowed))
                 }
+            )
+        }
+        Row(
+            modifier = Modifier
+                .padding(top = 10.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (limitReached) ErrorSoft else SurfaceTint)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Outlined.Security,
+                contentDescription = null,
+                tint = if (limitReached) AlertRed else TextMuted,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                usageLabel,
+                color = if (limitReached) AlertRed else TextMuted,
+                style = MaterialTheme.typography.labelMedium
             )
         }
         Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2337,6 +2370,15 @@ private fun ModeAppPolicyRow(
             }
         }
     }
+}
+
+private fun modeUsageMinutes(packageName: String, states: Map<String, ParentState>): Long {
+    if (packageName in PolicyConstants.settingsSectionLockPackages) {
+        return PolicyConstants.primarySettingsPackages.maxOfOrNull { settingsPackage ->
+            states[settingsPackage]?.usageMinutesToday ?: 0L
+        } ?: 0L
+    }
+    return states[packageName]?.usageMinutesToday ?: 0L
 }
 
 @Composable
