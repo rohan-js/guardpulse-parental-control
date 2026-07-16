@@ -67,8 +67,26 @@ class LocalPolicyStore(context: Context) {
         }
     }
 
-    fun loadUsageOffsets(): Map<String, Long> {
-        val raw = prefs.getString("usageOffsets:${DateKeys.today()}", null) ?: return emptyMap()
+    fun loadUsageOffsetsMs(): Map<String, Long> {
+        val day = DateKeys.today()
+        val key = "usageOffsetsMs:$day"
+        val existing = prefs.getString(key, null)
+        if (existing != null) return parseLongMap(existing)
+
+        val legacy = prefs.getString("usageOffsets:$day", null) ?: return emptyMap()
+        val migrated = parseLongMap(legacy).mapValues { (_, minutes) -> minutes.coerceAtLeast(0L) * 60_000L }
+        saveLongMap(key, migrated)
+        return migrated
+    }
+
+    fun saveUsageOffsetMs(packageName: String, usageMs: Long) {
+        val key = "usageOffsetsMs:${DateKeys.today()}"
+        val values = parseLongMap(prefs.getString(key, "{}") ?: "{}").toMutableMap()
+        values[packageName] = usageMs.coerceAtLeast(0L)
+        saveLongMap(key, values)
+    }
+
+    private fun parseLongMap(raw: String): Map<String, Long> {
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyMap()
         return buildMap {
             json.keys().forEach { packageName ->
@@ -77,11 +95,9 @@ class LocalPolicyStore(context: Context) {
         }
     }
 
-    fun saveUsageOffset(packageName: String, minutes: Long) {
-        val key = "usageOffsets:${DateKeys.today()}"
-        val json = runCatching { JSONObject(prefs.getString(key, "{}") ?: "{}") }
-            .getOrDefault(JSONObject())
-        json.put(packageName, minutes)
+    private fun saveLongMap(key: String, values: Map<String, Long>) {
+        val json = JSONObject()
+        values.forEach { (name, value) -> json.put(name, value) }
         prefs.edit().putString(key, json.toString()).apply()
     }
 

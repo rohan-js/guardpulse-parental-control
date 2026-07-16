@@ -40,6 +40,31 @@ object PolicyConstants {
     const val UNLOCK_APPROVAL_ONE_VISIT = "oneVisit"
     const val UNLOCK_APPROVAL_TIMED = "timed"
 
+    const val SYNC_PROTOCOL_VERSION = 2
+    const val SYNC_STATUS_APPLIED = "applied"
+    const val SYNC_STATUS_FAILED = "failed"
+    const val COMMAND_PENDING = "pending"
+    const val COMMAND_RUNNING = "running"
+    const val COMMAND_DONE = "done"
+    const val COMMAND_FAILED = "failed"
+    const val COMMAND_EXPIRED = "expired"
+
+    const val PAIR_PENDING = "pending"
+    const val PAIR_ACCEPTED = "accepted"
+    const val PAIR_REJECTED = "rejected"
+    const val PAIR_EXPIRED = "expired"
+    const val PAIR_FAILED = "failed"
+
+    const val REVISION_APP_POLICY = "appPolicy"
+    const val REVISION_MODE_CREATE = "modeCreate"
+    const val REVISION_MODE_UPDATE = "modeUpdate"
+    const val REVISION_MODE_DELETE = "modeDelete"
+    const val REVISION_MODE_POLICY = "modePolicy"
+    const val REVISION_ACTIVE_MODE = "activeMode"
+    const val REVISION_SAFE_MODE = "safeMode"
+    const val REVISION_PIN = "pin"
+    const val REVISION_MIGRATION = "migration"
+
     const val TAMPER_ADMIN_DISABLE_REQUESTED = "adminDisableRequested"
     const val TAMPER_ADMIN_DISABLED = "adminDisabled"
     const val TAMPER_ACCESSIBILITY_DISABLED = "accessibilityDisabled"
@@ -47,14 +72,25 @@ object PolicyConstants {
     const val TAMPER_VPN_DISABLED = "vpnDisabled"
     const val TAMPER_RISKY_SETTINGS_OPENED = "riskySettingsOpened"
 
-    const val HEARTBEAT_INTERVAL_MS = 60_000L
+    const val HEARTBEAT_INTERVAL_MS = 30_000L
     const val USAGE_SCAN_INTERVAL_MS = 60_000L
+    const val FOREGROUND_USAGE_UPLOAD_INTERVAL_MS = 10_000L
+    const val FOREGROUND_USAGE_EXTRAPOLATION_MAX_MS = 20_000L
     const val PAIRING_TTL_MS = 10 * 60_000L
     const val TEMP_UNLOCK_MS = 10 * 60_000L
     const val UNLOCK_15_MINUTES_MS = 15 * 60_000L
     const val UNLOCK_30_MINUTES_MS = 30 * 60_000L
     const val SAFE_MODE_DURATION_MS = 30 * 60_000L
     const val TAMPER_EVENT_THROTTLE_MS = 15 * 60_000L
+    const val COMMAND_OPEN_SETUP_TTL_MS = 60_000L
+    const val COMMAND_STANDARD_TTL_MS = 5 * 60_000L
+    const val COMMAND_UNPAIR_TTL_MS = 10 * 60_000L
+
+    fun commandTtlMs(type: String): Long = when (type) {
+        COMMAND_OPEN_SETUP -> COMMAND_OPEN_SETUP_TTL_MS
+        COMMAND_UNPAIR -> COMMAND_UNPAIR_TTL_MS
+        else -> COMMAND_STANDARD_TTL_MS
+    }
 
     val sourceLockPackages = setOf(
         "com.android.tv"

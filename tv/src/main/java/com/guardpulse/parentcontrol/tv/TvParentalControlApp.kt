@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequest
 import androidx.work.WorkManager
+import com.guardpulse.parentcontrol.shared.FirebaseRuntime
 import com.guardpulse.parentcontrol.tv.fallback.FallbackStateStore
 import com.guardpulse.parentcontrol.tv.sync.PolicyReconcileWorker
 import com.guardpulse.parentcontrol.tv.system.StrictProtectionStarter
@@ -12,6 +13,7 @@ import java.util.concurrent.TimeUnit
 class TvParentalControlApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        FirebaseRuntime.initialize(this)
         FallbackStateStore(this).clearSetupVisitUnlock()
         val work = PeriodicWorkRequest.Builder(
             PolicyReconcileWorker::class.java,

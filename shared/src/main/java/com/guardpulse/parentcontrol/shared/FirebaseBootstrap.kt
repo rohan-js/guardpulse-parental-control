@@ -3,6 +3,7 @@ package com.guardpulse.parentcontrol.shared
 import android.content.Context
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.database.FirebaseDatabase
 
 data class FirebaseStatus(
     val configured: Boolean,
@@ -25,7 +26,7 @@ object FirebaseBootstrap {
             "firebase_api_key" to apiKey,
             "firebase_project_id" to projectId,
             "firebase_database_url" to databaseUrl
-        ).filter { (_, value) -> value.isBlank() || value.startsWith("replace_") }
+        ).filter { (_, value) -> isPlaceholder(value) }
 
         if (missing.isNotEmpty()) {
             return FirebaseStatus(
@@ -47,5 +48,30 @@ object FirebaseBootstrap {
     private fun readString(context: Context, name: String): String {
         val id = context.resources.getIdentifier(name, "string", context.packageName)
         return if (id == 0) "" else context.getString(id).trim()
+    }
+
+    private fun isPlaceholder(value: String): Boolean {
+        val normalized = value.trim().lowercase()
+        return normalized.isBlank() ||
+            normalized.startsWith("replace_") ||
+            normalized.startsWith("your_") ||
+            normalized.contains("your-firebase-project") ||
+            normalized.contains("example.invalid")
+    }
+}
+
+object FirebaseRuntime {
+    @Volatile
+    private var persistenceAttempted = false
+
+    @Synchronized
+    fun initialize(context: Context): FirebaseStatus {
+        val status = FirebaseBootstrap.initialize(context)
+        if (!status.configured || persistenceAttempted) return status
+        persistenceAttempted = true
+        runCatching {
+            FirebaseDatabase.getInstance().setPersistenceEnabled(true)
+        }
+        return status
     }
 }

@@ -3,37 +3,90 @@ package com.guardpulse.parentcontrol.parent
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.ServerValue
+import com.guardpulse.parentcontrol.shared.ControlPin
 import com.guardpulse.parentcontrol.shared.FirebasePaths
+import com.guardpulse.parentcontrol.shared.FirebaseServerClock
+import com.guardpulse.parentcontrol.shared.PackageKeys
 import com.guardpulse.parentcontrol.shared.PinHasher
 import com.guardpulse.parentcontrol.shared.PolicyConstants
 
 class ParentRepository(
     private val database: DatabaseReference,
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
+    private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
+    private val serverClock: FirebaseServerClock = FirebaseServerClock()
 ) {
+    private val controlWriteQueue = ArrayDeque<() -> Unit>()
+    private var controlWriteInFlight = false
+
+    init {
+        serverClock.start()
+    }
+
     fun createPairRequest(
         deviceId: String,
         secret: String?,
         manualCode: String,
-        onSuccess: () -> Unit,
+        onSuccess: (String) -> Unit,
         onError: (String) -> Unit
     ) {
-        val uid = auth.currentUser?.uid ?: run {
-            onError("Sign in before pairing a TV")
-            return
-        }
-        database.child(FirebasePaths.pairRequests(deviceId)).push().setValue(
+        val uid = requireUid(onError) ?: return
+        val ref = database.child(FirebasePaths.pairRequests(deviceId)).push()
+        val requestId = ref.key ?: return onError("Could not create pair request")
+        ref.setValue(
             mapOf(
                 "parentUid" to uid,
                 "secret" to secret,
                 "code" to manualCode.ifBlank { null },
                 "createdAt" to ServerValue.TIMESTAMP,
-                "status" to "pending"
+                "expiresAt" to serverClock.now() + PolicyConstants.PAIRING_TTL_MS,
+                "status" to PolicyConstants.COMMAND_PENDING
             )
-        ).addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "Pair request failed")
+        ).addOnSuccessListener { onSuccess(requestId) }
+            .addOnFailureListener { onError(it.message ?: "Pair request failed") }
+    }
+
+    fun seedControlV2(
+        deviceId: String,
+        policies: Map<String, ParentPolicy>,
+        modes: List<ParentMode>,
+        activeMode: ActiveMode,
+        safeMode: SafeModeState,
+        pin: ControlPin?,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val uid = requireUid(onError) ?: return
+        enqueueControlWrite {
+            val revisionId = newRevisionId(deviceId)
+            val control = mapOf<String, Any?>(
+                "schemaVersion" to PolicyConstants.SYNC_PROTOCOL_VERSION,
+                "revisionId" to revisionId,
+                "updatedAt" to ServerValue.TIMESTAMP,
+                "updatedBy" to uid,
+                "apps" to policies.mapKeys { PackageKeys.encode(it.key) }.mapValues { (packageName, policy) ->
+                    appPolicyValue(packageName, policy)
+                },
+                "modes" to modes.associate { mode -> mode.modeId to modeValue(mode) },
+                "activeMode" to activeMode.modeId?.let {
+                    mapOf(
+                        "modeId" to it,
+                        "modeName" to activeMode.modeName,
+                        "activatedAt" to activeMode.activatedAt
+                    )
+                },
+                "safeMode" to mapOf(
+                    "enabled" to safeMode.enabled,
+                    "until" to (safeMode.until ?: 0L),
+                    "startedAt" to safeMode.startedAt,
+                    "startedBy" to safeMode.startedBy
+                ),
+                "pin" to pin?.let {
+                    mapOf("salt" to it.salt, "hash" to it.hash, "updatedAt" to it.updatedAt)
+                }
+            )
+            val updates = mutableMapOf<String, Any?>(FirebasePaths.deviceControlV2(deviceId) to control)
+            addDesiredRevision(updates, deviceId, revisionId, PolicyConstants.REVISION_MIGRATION, "control", uid)
+            database.updateChildren(updates).finishQueuedWrite(onSuccess, onError, "Control migration failed")
         }
     }
 
@@ -44,16 +97,11 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val value = mutableMapOf<String, Any?>(
-            "packageName" to packageName,
-            "manualBlocked" to policy.manualBlocked,
-            "updatedAt" to ServerValue.TIMESTAMP
-        )
-        policy.dailyLimitMinutes?.let { value["dailyLimitMinutes"] = it }
-        database.child(FirebasePaths.devicePolicyApp(deviceId, packageName))
-            .setValue(value)
-            .addOnSuccessListener { onSuccess() }
-            .addOnFailureListener { onError(it.message ?: "Policy update failed") }
+        val value = appPolicyValue(packageName, policy)
+        controlUpdate(deviceId, PolicyConstants.REVISION_APP_POLICY, packageName, onSuccess, onError) { updates ->
+            updates[FirebasePaths.devicePolicyApp(deviceId, packageName)] = value
+            updates[FirebasePaths.deviceControlV2App(deviceId, packageName)] = value
+        }
     }
 
     fun setPin(
@@ -63,17 +111,15 @@ class ParentRepository(
         onError: (String) -> Unit
     ) {
         val hash = PinHasher.create(pin)
-        database.child(FirebasePaths.deviceSecurityPin(deviceId)).setValue(
-            mapOf(
-                "salt" to hash.salt,
-                "hash" to hash.hash,
-                "updatedAt" to ServerValue.TIMESTAMP,
-                "updatedBy" to auth.currentUser?.uid
-            )
-        ).addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "PIN update failed")
+        val value = mapOf(
+            "salt" to hash.salt,
+            "hash" to hash.hash,
+            "updatedAt" to ServerValue.TIMESTAMP,
+            "updatedBy" to auth.currentUser?.uid
+        )
+        controlUpdate(deviceId, PolicyConstants.REVISION_PIN, "pin", onSuccess, onError) { updates ->
+            updates[FirebasePaths.deviceSecurityPin(deviceId)] = value
+            updates[FirebasePaths.deviceControlV2Pin(deviceId)] = value
         }
     }
 
@@ -93,12 +139,9 @@ class ParentRepository(
         )
         if (approvalType != null) value["approvalType"] = approvalType
         if (approvalDurationMs != null) value["approvalDurationMs"] = approvalDurationMs
-        database.child(FirebasePaths.deviceUnlockRequest(deviceId, request.requestId)).updateChildren(value)
-            .addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "Unlock update failed")
-        }
+        database.child(FirebasePaths.deviceUnlockRequest(deviceId, request.requestId))
+            .updateChildren(value)
+            .complete(onSuccess, onError, "Unlock update failed")
     }
 
     fun createMode(
@@ -107,23 +150,20 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val modeRef = database.child(FirebasePaths.devicePolicyModes(deviceId)).push()
-        val modeId = modeRef.key ?: run {
+        val modeId = database.child(FirebasePaths.devicePolicyModes(deviceId)).push().key ?: run {
             onError("Could not create mode")
             return
         }
-        modeRef.setValue(
-            mapOf(
-                "modeId" to modeId,
-                "name" to name,
-                "createdAt" to ServerValue.TIMESTAMP,
-                "updatedAt" to ServerValue.TIMESTAMP,
-                "updatedBy" to auth.currentUser?.uid
-            )
-        ).addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "Mode create failed")
+        val value = mapOf(
+            "modeId" to modeId,
+            "name" to name,
+            "createdAt" to ServerValue.TIMESTAMP,
+            "updatedAt" to ServerValue.TIMESTAMP,
+            "updatedBy" to auth.currentUser?.uid
+        )
+        controlUpdate(deviceId, PolicyConstants.REVISION_MODE_CREATE, modeId, onSuccess, onError) { updates ->
+            updates[FirebasePaths.devicePolicyMode(deviceId, modeId)] = value
+            updates[FirebasePaths.deviceControlV2Mode(deviceId, modeId)] = value
         }
     }
 
@@ -134,16 +174,15 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        database.child(FirebasePaths.devicePolicyMode(deviceId, modeId)).updateChildren(
-            mapOf(
-                "name" to name,
-                "updatedAt" to ServerValue.TIMESTAMP,
-                "updatedBy" to auth.currentUser?.uid
-            )
-        ).addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "Mode update failed")
+        controlUpdate(deviceId, PolicyConstants.REVISION_MODE_UPDATE, modeId, onSuccess, onError) { updates ->
+            listOf(
+                FirebasePaths.devicePolicyMode(deviceId, modeId),
+                FirebasePaths.deviceControlV2Mode(deviceId, modeId)
+            ).forEach { path ->
+                updates["$path/name"] = name
+                updates["$path/updatedAt"] = ServerValue.TIMESTAMP
+                updates["$path/updatedBy"] = auth.currentUser?.uid
+            }
         }
     }
 
@@ -155,32 +194,28 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val value = mutableMapOf<String, Any?>(
-            "packageName" to packageName,
-            "manualBlocked" to policy.manualBlocked,
-            "updatedAt" to ServerValue.TIMESTAMP
-        )
-        policy.dailyLimitMinutes?.let { value["dailyLimitMinutes"] = it }
-        database.child(FirebasePaths.devicePolicyModeApp(deviceId, modeId, packageName))
-            .setValue(value)
-            .addOnSuccessListener { onSuccess() }
-            .addOnFailureListener { onError(it.message ?: "Mode policy update failed") }
+        val value = appPolicyValue(packageName, policy)
+        controlUpdate(deviceId, PolicyConstants.REVISION_MODE_POLICY, "$modeId:$packageName", onSuccess, onError) { updates ->
+            updates[FirebasePaths.devicePolicyModeApp(deviceId, modeId, packageName)] = value
+            updates[FirebasePaths.deviceControlV2ModeApp(deviceId, modeId, packageName)] = value
+        }
     }
 
     fun deleteMode(
         deviceId: String,
         modeId: String,
+        activeModeId: String?,
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        database.updateChildren(
-            mapOf<String, Any?>(
-                FirebasePaths.devicePolicyMode(deviceId, modeId) to null,
-                FirebasePaths.devicePolicyActiveMode(deviceId) to null
-            )
-        )
-            .addOnSuccessListener { onSuccess() }
-            .addOnFailureListener { onError(it.message ?: "Mode delete failed") }
+        controlUpdate(deviceId, PolicyConstants.REVISION_MODE_DELETE, modeId, onSuccess, onError) { updates ->
+            updates[FirebasePaths.devicePolicyMode(deviceId, modeId)] = null
+            updates[FirebasePaths.deviceControlV2Mode(deviceId, modeId)] = null
+            if (activeModeId == modeId) {
+                updates[FirebasePaths.devicePolicyActiveMode(deviceId)] = null
+                updates[FirebasePaths.deviceControlV2ActiveMode(deviceId)] = null
+            }
+        }
     }
 
     fun setActiveMode(
@@ -189,21 +224,18 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val ref = database.child(FirebasePaths.devicePolicyActiveMode(deviceId))
-        val task = if (mode == null) {
-            ref.removeValue()
-        } else {
-            ref.setValue(
-                mapOf(
-                    "modeId" to mode.modeId,
-                    "modeName" to mode.name,
-                    "activatedAt" to ServerValue.TIMESTAMP,
-                    "updatedBy" to auth.currentUser?.uid
-                )
+        val value = mode?.let {
+            mapOf(
+                "modeId" to it.modeId,
+                "modeName" to it.name,
+                "activatedAt" to ServerValue.TIMESTAMP,
+                "updatedBy" to auth.currentUser?.uid
             )
         }
-        task.addOnSuccessListener { onSuccess() }
-            .addOnFailureListener { onError(it.message ?: "Mode activation failed") }
+        controlUpdate(deviceId, PolicyConstants.REVISION_ACTIVE_MODE, mode?.modeId ?: "none", onSuccess, onError) { updates ->
+            updates[FirebasePaths.devicePolicyActiveMode(deviceId)] = value
+            updates[FirebasePaths.deviceControlV2ActiveMode(deviceId)] = value
+        }
     }
 
     fun startSafeMode(
@@ -212,19 +244,16 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val now = System.currentTimeMillis()
         val durationMs = durationMinutes.coerceIn(1, 1440) * 60_000L
-        database.child(FirebasePaths.deviceSecuritySafeMode(deviceId)).setValue(
-            mapOf(
-                "enabled" to true,
-                "until" to now + durationMs,
-                "startedAt" to ServerValue.TIMESTAMP,
-                "startedBy" to auth.currentUser?.uid
-            )
-        ).addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "Safe Mode failed")
+        val value = mapOf(
+            "enabled" to true,
+            "until" to serverClock.now() + durationMs,
+            "startedAt" to ServerValue.TIMESTAMP,
+            "startedBy" to auth.currentUser?.uid
+        )
+        controlUpdate(deviceId, PolicyConstants.REVISION_SAFE_MODE, "enabled", onSuccess, onError) { updates ->
+            updates[FirebasePaths.deviceSecuritySafeMode(deviceId)] = value
+            updates[FirebasePaths.deviceControlV2SafeMode(deviceId)] = value
         }
     }
 
@@ -233,17 +262,15 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        database.child(FirebasePaths.deviceSecuritySafeMode(deviceId)).setValue(
-            mapOf(
-                "enabled" to false,
-                "until" to 0L,
-                "updatedAt" to ServerValue.TIMESTAMP,
-                "updatedBy" to auth.currentUser?.uid
-            )
-        ).addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "Safe Mode deactivation failed")
+        val value = mapOf(
+            "enabled" to false,
+            "until" to 0L,
+            "updatedAt" to ServerValue.TIMESTAMP,
+            "updatedBy" to auth.currentUser?.uid
+        )
+        controlUpdate(deviceId, PolicyConstants.REVISION_SAFE_MODE, "disabled", onSuccess, onError) { updates ->
+            updates[FirebasePaths.deviceSecuritySafeMode(deviceId)] = value
+            updates[FirebasePaths.deviceControlV2SafeMode(deviceId)] = value
         }
     }
 
@@ -254,19 +281,17 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val uid = auth.currentUser?.uid ?: run {
-            onError("Sign in before sending commands")
-            return
-        }
+        val uid = requireUid(onError) ?: return
         val value = mutableMapOf<String, Any?>(
             "type" to type,
             "requestedBy" to uid,
-            "createdAt" to ServerValue.TIMESTAMP
+            "createdAt" to ServerValue.TIMESTAMP,
+            "ttlMs" to PolicyConstants.commandTtlMs(type),
+            "status" to PolicyConstants.COMMAND_PENDING
         )
         if (packageName != null) value["packageName"] = packageName
         database.child(FirebasePaths.deviceCommands(deviceId)).push().setValue(value)
-            .addOnSuccessListener { onSuccess() }
-            .addOnFailureListener { onError(it.message ?: "Command failed") }
+            .complete(onSuccess, onError, "Command failed")
     }
 
     fun removePairedDevice(
@@ -274,25 +299,109 @@ class ParentRepository(
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
-        val uid = auth.currentUser?.uid ?: run {
-            onError("Sign in before removing a TV")
-            return
+        sendCommand(deviceId, PolicyConstants.COMMAND_UNPAIR, null, onSuccess, onError)
+    }
+
+    private fun controlUpdate(
+        deviceId: String,
+        kind: String,
+        target: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit,
+        mutate: (MutableMap<String, Any?>) -> Unit
+    ) {
+        val uid = requireUid(onError) ?: return
+        enqueueControlWrite {
+            val revisionId = newRevisionId(deviceId)
+            val updates = mutableMapOf<String, Any?>()
+            mutate(updates)
+            val controlPath = FirebasePaths.deviceControlV2(deviceId)
+            updates["$controlPath/schemaVersion"] = PolicyConstants.SYNC_PROTOCOL_VERSION
+            updates["$controlPath/revisionId"] = revisionId
+            updates["$controlPath/updatedAt"] = ServerValue.TIMESTAMP
+            updates["$controlPath/updatedBy"] = uid
+            addDesiredRevision(updates, deviceId, revisionId, kind, target, uid)
+            database.updateChildren(updates).finishQueuedWrite(onSuccess, onError, "Control update failed")
         }
-        val commandKey = database.child(FirebasePaths.deviceCommands(deviceId)).push().key ?: run {
-            onError("Could not create unpair command")
-            return
+    }
+
+    private fun addDesiredRevision(
+        updates: MutableMap<String, Any?>,
+        deviceId: String,
+        revisionId: String,
+        kind: String,
+        target: String,
+        uid: String
+    ) {
+        updates[FirebasePaths.deviceSyncDesired(deviceId)] = mapOf(
+            "revisionId" to revisionId,
+            "kind" to kind,
+            "target" to target,
+            "requestedAt" to ServerValue.TIMESTAMP,
+            "requestedBy" to uid
+        )
+    }
+
+    private fun newRevisionId(deviceId: String): String {
+        return database.child("${FirebasePaths.deviceSync(deviceId)}/revisionKeys").push().key
+            ?: "${serverClock.now()}-${java.util.UUID.randomUUID()}"
+    }
+
+    private fun appPolicyValue(packageName: String, policy: ParentPolicy): Map<String, Any?> = mapOf(
+        "packageName" to packageName,
+        "manualBlocked" to policy.manualBlocked,
+        "dailyLimitMinutes" to policy.dailyLimitMinutes,
+        "updatedAt" to ServerValue.TIMESTAMP
+    )
+
+    private fun modeValue(mode: ParentMode): Map<String, Any?> = mapOf(
+        "modeId" to mode.modeId,
+        "name" to mode.name,
+        "createdAt" to mode.createdAt,
+        "updatedAt" to mode.updatedAt,
+        "apps" to mode.appPolicies.mapKeys { PackageKeys.encode(it.key) }.mapValues { (packageName, policy) ->
+            appPolicyValue(packageName, policy)
         }
-        database.updateChildren(
-            mapOf(
-                "${FirebasePaths.userDevice(uid, deviceId)}" to null,
-                "${FirebasePaths.deviceCommands(deviceId)}/$commandKey/type" to PolicyConstants.COMMAND_UNPAIR,
-                "${FirebasePaths.deviceCommands(deviceId)}/$commandKey/requestedBy" to uid,
-                "${FirebasePaths.deviceCommands(deviceId)}/$commandKey/createdAt" to ServerValue.TIMESTAMP
-            )
-        ).addOnSuccessListener {
-            onSuccess()
-        }.addOnFailureListener { error ->
-            onError(error.message ?: "Device removal failed")
+    )
+
+    private fun requireUid(onError: (String) -> Unit): String? {
+        return auth.currentUser?.uid ?: run {
+            onError("Sign in before changing TV controls")
+            null
         }
+    }
+
+    private fun enqueueControlWrite(write: () -> Unit) {
+        controlWriteQueue.addLast(write)
+        startNextControlWrite()
+    }
+
+    private fun startNextControlWrite() {
+        if (controlWriteInFlight) return
+        val next = controlWriteQueue.removeFirstOrNull() ?: return
+        controlWriteInFlight = true
+        next()
+    }
+
+    private fun com.google.android.gms.tasks.Task<Void>.finishQueuedWrite(
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit,
+        fallbackMessage: String
+    ) {
+        addOnSuccessListener { onSuccess() }
+            .addOnFailureListener { onError(it.message ?: fallbackMessage) }
+            .addOnCompleteListener {
+                controlWriteInFlight = false
+                startNextControlWrite()
+            }
+    }
+
+    private fun com.google.android.gms.tasks.Task<Void>.complete(
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit,
+        fallbackMessage: String
+    ) {
+        addOnSuccessListener { onSuccess() }
+            .addOnFailureListener { onError(it.message ?: fallbackMessage) }
     }
 }

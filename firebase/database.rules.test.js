@@ -156,13 +156,30 @@ test("parent creates command and TV updates command status", async () => {
       type: "rescanApps",
       requestedBy: "parentUid",
       createdAt: 1,
+      ttlMs: 300000,
+      status: "pending",
+    })
+  );
+
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/commands/cmd1").update({
+      status: "running",
+      claimedAt: 2,
+      sessionId: "session-1",
     })
   );
 
   await assertSucceeds(
     dbAs("tvUid").ref("devices/tv1/commands/cmd1").update({
       status: "done",
-      completedAt: 2,
+      completedAt: 3,
+    })
+  );
+
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/commands/cmd1").update({
+      status: "running",
+      claimedAt: 4,
     })
   );
 });
@@ -238,5 +255,195 @@ test("paired parent can choose unlock approval type and invalid duration is reje
       updatedAt: 3,
       updatedBy: "parentUid",
     })
+  );
+});
+
+test("parent writes coherent V2 control and desired revision while TV cannot", async () => {
+  const control = {
+    schemaVersion: 2,
+    revisionId: "revision-1",
+    updatedAt: 10,
+    updatedBy: "parentUid",
+    apps: {
+      Y29tLnZpZGVv: {
+        packageName: "com.video",
+        manualBlocked: true,
+        dailyLimitMinutes: 30,
+        updatedAt: 10,
+      },
+    },
+    modes: {
+      mode1: {
+        modeId: "mode1",
+        name: "Study",
+        apps: {
+          Y29tLnZpZGVv: {
+            packageName: "com.video",
+            manualBlocked: true,
+          },
+        },
+      },
+    },
+    activeMode: { modeId: "mode1", modeName: "Study", activatedAt: 10 },
+    safeMode: { enabled: false, until: 0 },
+  };
+
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1").update({
+      "control/v2": control,
+      "sync/desired": {
+        revisionId: "revision-1",
+        kind: "migration",
+        target: "control",
+        requestedAt: 10,
+        requestedBy: "parentUid",
+      },
+    })
+  );
+
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/control/v2").set({
+      ...control,
+      revisionId: "revision-tv",
+      updatedBy: "tvUid",
+    })
+  );
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/sync/desired").set({
+      revisionId: "revision-tv",
+      kind: "migration",
+      requestedAt: 11,
+      requestedBy: "tvUid",
+    })
+  );
+});
+
+test("V2 rejects missing mode references and unsupported schemas", async () => {
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/control/v2").set({
+      schemaVersion: 2,
+      revisionId: "bad-mode",
+      updatedBy: "parentUid",
+      activeMode: { modeId: "missing" },
+      safeMode: { enabled: false, until: 0 },
+    })
+  );
+
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/control/v2").set({
+      schemaVersion: 3,
+      revisionId: "future-schema",
+      updatedBy: "parentUid",
+      safeMode: { enabled: false, until: 0 },
+    })
+  );
+});
+
+test("TV writes acknowledgements runtime diagnostics and precise usage only", async () => {
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/sync/applied").set({
+      revisionId: "revision-1",
+      status: "applied",
+      appliedAt: 20,
+      sessionId: "session-1",
+    })
+  );
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/sync/runtime").set({
+      connected: true,
+      sessionId: "session-1",
+      protocolVersion: 2,
+      lastPolicyAppliedAt: 20,
+      lastUsageWriteAt: 21,
+      lastSuccessAt: 21,
+    })
+  );
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/state/apps/Y29tLnZpZGVv").set({
+      packageName: "com.video",
+      requestedSuspended: false,
+      enforcementMode: "fallback",
+      fallbackLocked: false,
+      usageMinutesToday: 1,
+      usageMsToday: 65000,
+      rawUsageMsToday: 65000,
+      usageCapturedAt: 30,
+      foregroundActive: true,
+      foregroundStartedAt: 25,
+      updatedAt: 30,
+    })
+  );
+
+  await assertFails(
+    dbAs("parentUid").ref("devices/tv1/sync/applied").set({
+      revisionId: "revision-1",
+      status: "applied",
+      appliedAt: 20,
+      sessionId: "parent-session",
+    })
+  );
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/state/apps/Y29tLnZpZGVv").update({
+      usageMsToday: -1,
+    })
+  );
+});
+
+test("TV acknowledges approved unlock without gaining approval authority", async () => {
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/unlockRequests/requestAck").set({
+      requestId: "requestAck",
+      packageName: "com.video",
+      reason: "manual",
+      status: "pending",
+      createdAt: 1,
+      expiresAt: 9999999999999,
+      ttlMs: 600000,
+    })
+  );
+
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/unlockRequests/requestAck").update({
+      status: "approved",
+    })
+  );
+
+  await assertSucceeds(
+    dbAs("parentUid").ref("devices/tv1/unlockRequests/requestAck").update({
+      status: "approved",
+      approvalType: "oneVisit",
+      updatedAt: 2,
+      updatedBy: "parentUid",
+    })
+  );
+
+  await assertSucceeds(
+    dbAs("tvUid").ref("devices/tv1/unlockRequests/requestAck").update({
+      tvApplyStatus: "applied",
+      tvAppliedAt: 3,
+    })
+  );
+});
+
+test("pair request exposes lifecycle only to its parent and TV", async () => {
+  await assertSucceeds(
+    dbAs("parentUid").ref("pairRequests/tv1/pair1").set({
+      parentUid: "parentUid",
+      code: "123456",
+      createdAt: 1,
+      expiresAt: 300001,
+      status: "pending",
+    })
+  );
+  await assertSucceeds(dbAs("parentUid").ref("pairRequests/tv1/pair1").get());
+  await assertFails(dbAs("otherParent").ref("pairRequests/tv1/pair1").get());
+  await assertSucceeds(
+    dbAs("tvUid").ref("pairRequests/tv1/pair1").update({
+      status: "accepted",
+      respondedAt: 2,
+    })
+  );
+  await assertFails(
+    dbAs("parentUid").ref("pairRequests/tv1/pair1").update({ status: "rejected" })
   );
 });

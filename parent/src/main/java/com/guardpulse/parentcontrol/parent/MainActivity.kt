@@ -8,6 +8,7 @@ import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.viewModels
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -67,6 +68,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,27 +80,14 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.database.DataSnapshot
-import com.google.firebase.database.DatabaseError
-import com.google.firebase.database.DatabaseReference
-import com.google.firebase.database.FirebaseDatabase
-import com.google.firebase.database.Query
-import com.google.firebase.database.ValueEventListener
-import com.guardpulse.parentcontrol.shared.FirebaseBootstrap
-import com.guardpulse.parentcontrol.shared.FirebasePaths
-import com.guardpulse.parentcontrol.shared.PackageKeys
 import com.guardpulse.parentcontrol.shared.PolicyConstants
+import com.guardpulse.parentcontrol.shared.ControlProtocol
+import com.guardpulse.parentcontrol.shared.DeviceFreshness
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
-private data class ListenerRegistration(
-    val query: Query,
-    val listener: ValueEventListener
-)
 
 private data class ConfirmAction(
     val title: String,
@@ -109,27 +98,7 @@ private data class ConfirmAction(
 )
 
 class MainActivity : ComponentActivity() {
-    private var db: DatabaseReference? = null
-    private var repository: ParentRepository? = null
-    private var devices by mutableStateOf(emptyList<ParentDevice>())
-    private var apps by mutableStateOf(emptyMap<String, ParentApp>())
-    private var policies by mutableStateOf(emptyMap<String, ParentPolicy>())
-    private var states by mutableStateOf(emptyMap<String, ParentState>())
-    private var modes by mutableStateOf(emptyList<ParentMode>())
-    private var activeMode by mutableStateOf(ActiveMode())
-    private var safeMode by mutableStateOf(SafeModeState())
-    private var security by mutableStateOf(SecurityRuntime())
-    private var unlockRequests by mutableStateOf(emptyList<UnlockRequest>())
-    private var tamperEvents by mutableStateOf(emptyList<TamperEvent>())
-    private var selectedDeviceId by mutableStateOf<String?>(null)
-    private var message by mutableStateOf<String?>(null)
-    private var signedIn by mutableStateOf(false)
-    private var authBusy by mutableStateOf(false)
-    private var loadingDevices by mutableStateOf(false)
-    private var loadingDeviceDetails by mutableStateOf(false)
-    private var deviceListRegistration: ListenerRegistration? = null
-    private val detailRegistrations = mutableListOf<ListenerRegistration>()
-    private var attachedDeviceDetailsFor: String? = null
+    private val syncViewModel: ParentSyncViewModel by viewModels()
     private lateinit var qrScanLauncher: ActivityResultLauncher<ScanOptions>
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -141,664 +110,78 @@ class MainActivity : ComponentActivity() {
         qrScanLauncher = registerForActivityResult(ScanContract()) { result ->
             val payload = result.contents
             if (!payload.isNullOrBlank()) {
-                createPairRequest(payload, "", "")
+                syncViewModel.createPairRequest(payload, "", "")
             } else {
-                message = "QR scan cancelled. Paste QR payload or enter Device ID + code."
+                syncViewModel.createPairRequest("", "", "")
             }
-        }
-        val status = FirebaseBootstrap.initialize(this)
-        message = status.message
-        if (status.configured) {
-            val database = FirebaseDatabase.getInstance().reference
-            db = database
-            repository = ParentRepository(database)
-            signedIn = FirebaseAuth.getInstance().currentUser != null
-            if (signedIn) attachDeviceList()
         }
 
         setContent {
+            val state by syncViewModel.state.collectAsStateWithLifecycle()
             ParentTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    if (db == null) {
-                        MissingFirebaseScreen(message.orEmpty())
-                    } else if (!signedIn) {
-                        AuthScreen(message = message, busy = authBusy, onSignIn = ::signIn, onCreate = ::createAccount)
+                    if (!state.configured) {
+                        MissingFirebaseScreen(state.firebaseMessage.orEmpty())
+                    } else if (!state.signedIn) {
+                        AuthScreen(
+                            message = state.message,
+                            busy = state.authBusy,
+                            onSignIn = syncViewModel::signIn,
+                            onCreate = syncViewModel::createAccount
+                        )
                     } else {
                         ParentDashboard(
-                            message = message,
-                            devices = devices,
-                            loadingDevices = loadingDevices,
-                            selectedDeviceId = selectedDeviceId,
-                            apps = apps,
-                            policies = policies,
-                            states = states,
-                            modes = modes,
-                            activeMode = activeMode,
-                            safeMode = safeMode,
-                            security = security,
-                            unlockRequests = unlockRequests,
-                            tamperEvents = tamperEvents,
-                            loadingDeviceDetails = loadingDeviceDetails,
-                            onSignOut = ::signOut,
-                            onSelectDevice = { deviceId ->
-                                selectedDeviceId = deviceId
-                                attachDeviceDetails(deviceId)
-                            },
-                            onRemoveDevice = ::removePairedDevice,
-                            onPair = ::createPairRequest,
-                            onUpdatePolicy = ::updatePolicy,
-                            onSetPin = ::setPin,
+                            message = state.message,
+                            devices = state.devices,
+                            loadingDevices = state.loadingDevices,
+                            selectedDeviceId = state.selectedDeviceId,
+                            apps = state.apps,
+                            policies = state.policies,
+                            states = state.states,
+                            modes = state.modes,
+                            activeMode = state.activeMode,
+                            safeMode = state.safeMode,
+                            security = state.security,
+                            unlockRequests = state.unlockRequests,
+                            tamperEvents = state.tamperEvents,
+                            syncState = state,
+                            loadingDeviceDetails = state.loadingDeviceDetails,
+                            onSignOut = syncViewModel::signOut,
+                            onSelectDevice = syncViewModel::selectDevice,
+                            onRemoveDevice = syncViewModel::removePairedDevice,
+                            onPair = syncViewModel::createPairRequest,
+                            onUpdatePolicy = syncViewModel::updatePolicy,
+                            onSetPin = syncViewModel::setPin,
                             onApproveUnlock = { request, approvalType, durationMs ->
-                                updateUnlock(request, PolicyConstants.UNLOCK_APPROVED, approvalType, durationMs)
+                                syncViewModel.updateUnlock(
+                                    request,
+                                    PolicyConstants.UNLOCK_APPROVED,
+                                    approvalType,
+                                    durationMs
+                                )
                             },
-                            onDenyUnlock = { request -> updateUnlock(request, PolicyConstants.UNLOCK_DENIED) },
-                            onCreateMode = ::createMode,
-                            onRenameMode = ::renameMode,
-                            onDeleteMode = ::deleteMode,
-                            onUpdateModePolicy = ::updateModePolicy,
-                            onSetActiveMode = ::setActiveMode,
-                            onStartSafeMode = ::startSafeMode,
-                            onStopSafeMode = ::stopSafeMode,
-                            onRescan = { selectedDeviceId?.let { sendCommand(it, PolicyConstants.COMMAND_RESCAN_APPS) } },
-                            onOpenTvSetup = { selectedDeviceId?.let { sendCommand(it, PolicyConstants.COMMAND_OPEN_SETUP) } },
+                            onDenyUnlock = { request ->
+                                syncViewModel.updateUnlock(request, PolicyConstants.UNLOCK_DENIED)
+                            },
+                            onCreateMode = syncViewModel::createMode,
+                            onRenameMode = syncViewModel::renameMode,
+                            onDeleteMode = syncViewModel::deleteMode,
+                            onUpdateModePolicy = syncViewModel::updateModePolicy,
+                            onSetActiveMode = syncViewModel::setActiveMode,
+                            onStartSafeMode = syncViewModel::startSafeMode,
+                            onStopSafeMode = syncViewModel::stopSafeMode,
+                            onRescan = { syncViewModel.sendCommand(PolicyConstants.COMMAND_RESCAN_APPS) },
+                            onOpenTvSetup = { syncViewModel.sendCommand(PolicyConstants.COMMAND_OPEN_SETUP) },
                             onResetToday = { packageName ->
-                                selectedDeviceId?.let {
-                                    sendCommand(it, PolicyConstants.COMMAND_RESET_TODAY, packageName)
-                                }
+                                syncViewModel.sendCommand(PolicyConstants.COMMAND_RESET_TODAY, packageName)
                             },
+                            onReconnect = syncViewModel::reconnect,
                             onScanQr = ::openExternalQrScanner
                         )
                     }
                 }
             }
         }
-    }
-
-    override fun onDestroy() {
-        clearAllListeners()
-        super.onDestroy()
-    }
-
-    private fun signIn(email: String, password: String) {
-        if (!validateAuthInput(email, password)) return
-        authBusy = true
-        FirebaseAuth.getInstance().signInWithEmailAndPassword(email.trim(), password)
-            .addOnSuccessListener {
-                attachDeviceList()
-                signedIn = true
-                message = "Signed in"
-            }
-            .addOnFailureListener { message = it.message }
-            .addOnCompleteListener { authBusy = false }
-    }
-
-    private fun createAccount(email: String, password: String) {
-        if (!validateAuthInput(email, password)) return
-        authBusy = true
-        FirebaseAuth.getInstance().createUserWithEmailAndPassword(email.trim(), password)
-            .addOnSuccessListener {
-                attachDeviceList()
-                signedIn = true
-                message = "Account created"
-            }
-            .addOnFailureListener { message = it.message }
-            .addOnCompleteListener { authBusy = false }
-    }
-
-    private fun validateAuthInput(email: String, password: String): Boolean {
-        if (email.isBlank()) {
-            message = "Enter an email address"
-            return false
-        }
-        if (password.length < 6) {
-            message = "Password must be at least 6 characters"
-            return false
-        }
-        return true
-    }
-
-    private fun signOut() {
-        clearAllListeners()
-        FirebaseAuth.getInstance().signOut()
-        signedIn = false
-        selectedDeviceId = null
-        attachedDeviceDetailsFor = null
-        devices = emptyList()
-        apps = emptyMap()
-        policies = emptyMap()
-        states = emptyMap()
-        modes = emptyList()
-        activeMode = ActiveMode()
-        safeMode = SafeModeState()
-        security = SecurityRuntime()
-        unlockRequests = emptyList()
-        tamperEvents = emptyList()
-        loadingDevices = false
-        loadingDeviceDetails = false
-    }
-
-    private fun attachDeviceList() {
-        if (deviceListRegistration != null) return
-        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val database = db ?: run {
-            message = "Firebase database is not ready"
-            return
-        }
-        loadingDevices = true
-        deviceListRegistration = registerListener(database.child(FirebasePaths.userDevices(uid))) { snapshot ->
-            loadingDevices = false
-            devices = snapshot.children.mapNotNull { child ->
-                val deviceId = child.child("deviceId").getValue(String::class.java)
-                    ?: child.key
-                    ?: return@mapNotNull null
-                ParentDevice(
-                    deviceId = deviceId,
-                    label = child.child("label").getValue(String::class.java) ?: deviceId,
-                    lastSeen = child.child("lastSeen").getValue(Long::class.java),
-                    online = child.child("online").getValue(Boolean::class.java) ?: false,
-                    enforcementMode = child.child("enforcementMode").getValue(String::class.java)
-                        ?: PolicyConstants.ENFORCEMENT_UNPROTECTED,
-                    protectionHealthy = child.child("protectionHealthy").getValue(Boolean::class.java) ?: false
-                )
-            }
-            if (selectedDeviceId != null && devices.none { it.deviceId == selectedDeviceId }) {
-                selectedDeviceId = null
-                clearDeviceDetailListeners()
-                attachedDeviceDetailsFor = null
-                apps = emptyMap()
-                policies = emptyMap()
-                states = emptyMap()
-                security = SecurityRuntime()
-                unlockRequests = emptyList()
-                tamperEvents = emptyList()
-            }
-            if (selectedDeviceId == null && devices.size == 1) {
-                selectedDeviceId = devices.first().deviceId
-                attachDeviceDetails(devices.first().deviceId)
-            }
-        }
-    }
-
-    private fun attachDeviceDetails(deviceId: String) {
-        if (attachedDeviceDetailsFor == deviceId) return
-        clearDeviceDetailListeners()
-        attachedDeviceDetailsFor = deviceId
-        loadingDeviceDetails = true
-        apps = emptyMap()
-        policies = emptyMap()
-        states = emptyMap()
-        security = SecurityRuntime()
-        unlockRequests = emptyList()
-        tamperEvents = emptyList()
-
-        val database = db ?: run {
-            loadingDeviceDetails = false
-            message = "Firebase database is not ready"
-            return
-        }
-
-        registerDetailListener(database.child(FirebasePaths.deviceApps(deviceId))) {
-            loadingDeviceDetails = false
-            apps = it.children.mapNotNull { child ->
-                val packageName = child.child("packageName").getValue(String::class.java)
-                    ?: runCatching { PackageKeys.decode(child.key.orEmpty()) }.getOrNull()
-                    ?: return@mapNotNull null
-                if (packageName in PolicyConstants.deprecatedVirtualPolicyPackages) return@mapNotNull null
-                packageName to ParentApp(
-                    packageName = packageName,
-                    label = child.child("label").getValue(String::class.java) ?: packageName,
-                    blockable = child.child("blockable").getValue(Boolean::class.java) ?: false,
-                    protectedReason = child.child("protectedReason").getValue(String::class.java)
-                )
-            }.toMap()
-        }
-
-        registerDetailListener(database.child(FirebasePaths.devicePolicyApps(deviceId))) {
-            policies = it.children.mapNotNull { child ->
-                val packageName = child.child("packageName").getValue(String::class.java)
-                    ?: runCatching { PackageKeys.decode(child.key.orEmpty()) }.getOrNull()
-                    ?: return@mapNotNull null
-                val limit = child.child("dailyLimitMinutes").getValue(Long::class.java)?.toInt()?.takeIf { value -> value > 0 }
-                packageName to ParentPolicy(
-                    manualBlocked = child.child("manualBlocked").getValue(Boolean::class.java) ?: false,
-                    dailyLimitMinutes = limit
-                )
-            }.toMap()
-        }
-
-        registerDetailListener(database.child(FirebasePaths.devicePolicyModes(deviceId))) {
-            modes = it.children.mapNotNull { modeSnapshot ->
-                val modeId = modeSnapshot.child("modeId").getValue(String::class.java)
-                    ?: modeSnapshot.key
-                    ?: return@mapNotNull null
-                val appPolicies = modeSnapshot.child("apps").children.mapNotNull appPolicy@{ child ->
-                    val packageName = child.child("packageName").getValue(String::class.java)
-                        ?: runCatching { PackageKeys.decode(child.key.orEmpty()) }.getOrNull()
-                        ?: return@appPolicy null
-                    val limit = child.child("dailyLimitMinutes").getValue(Long::class.java)
-                        ?.toInt()
-                        ?.takeIf { value -> value > 0 }
-                    packageName to ParentPolicy(
-                        manualBlocked = child.child("manualBlocked").getValue(Boolean::class.java) ?: false,
-                        dailyLimitMinutes = limit
-                    )
-                }.toMap()
-                ParentMode(
-                    modeId = modeId,
-                    name = modeSnapshot.child("name").getValue(String::class.java) ?: "Mode",
-                    appPolicies = appPolicies,
-                    createdAt = modeSnapshot.child("createdAt").getValue(Long::class.java),
-                    updatedAt = modeSnapshot.child("updatedAt").getValue(Long::class.java)
-                )
-            }.sortedBy { mode -> mode.name.lowercase() }
-        }
-
-        registerDetailListener(database.child(FirebasePaths.devicePolicyActiveMode(deviceId))) {
-            activeMode = ActiveMode(
-                modeId = it.child("modeId").getValue(String::class.java),
-                modeName = it.child("modeName").getValue(String::class.java),
-                activatedAt = it.child("activatedAt").getValue(Long::class.java)
-            )
-        }
-
-        registerDetailListener(database.child(FirebasePaths.deviceSecuritySafeMode(deviceId))) {
-            safeMode = SafeModeState(
-                enabled = it.child("enabled").getValue(Boolean::class.java) ?: false,
-                until = it.child("until").getValue(Long::class.java),
-                startedAt = it.child("startedAt").getValue(Long::class.java),
-                startedBy = it.child("startedBy").getValue(String::class.java)
-            )
-        }
-
-        registerDetailListener(database.child(FirebasePaths.deviceStateApps(deviceId))) {
-            states = it.children.mapNotNull { child ->
-                val packageName = child.child("packageName").getValue(String::class.java)
-                    ?: runCatching { PackageKeys.decode(child.key.orEmpty()) }.getOrNull()
-                    ?: return@mapNotNull null
-                packageName to ParentState(
-                    suspended = child.child("suspended").getValue(Boolean::class.java) ?: false,
-                    requestedSuspended = child.child("requestedSuspended").getValue(Boolean::class.java) ?: false,
-                    manualBlocked = child.child("manualBlocked").getValue(Boolean::class.java) ?: false,
-                    dailyLimitBlocked = child.child("dailyLimitBlocked").getValue(Boolean::class.java) ?: false,
-                    networkBlocked = child.child("networkBlocked").getValue(Boolean::class.java) ?: false,
-                    vpnApplied = child.child("vpnApplied").getValue(Boolean::class.java) ?: false,
-                    vpnActive = child.child("vpnActive").getValue(Boolean::class.java) ?: false,
-                    lockBlocked = child.child("lockBlocked").getValue(Boolean::class.java) ?: false,
-                    lockReason = child.child("lockReason").getValue(String::class.java),
-                    vpnLastError = child.child("vpnLastError").getValue(String::class.java),
-                    fallbackLocked = child.child("fallbackLocked").getValue(Boolean::class.java) ?: false,
-                    enforcementMode = child.child("enforcementMode").getValue(String::class.java)
-                        ?: PolicyConstants.ENFORCEMENT_UNPROTECTED,
-                    blockReason = child.child("blockReason").getValue(String::class.java),
-                    usageMinutesToday = child.child("usageMinutesToday").getValue(Long::class.java) ?: 0L,
-                    lastError = child.child("lastError").getValue(String::class.java)
-                )
-            }.toMap()
-        }
-
-        registerDetailListener(database.child(FirebasePaths.deviceSecurityRuntime(deviceId))) {
-            security = SecurityRuntime(
-                enforcementMode = it.child("enforcementMode").getValue(String::class.java)
-                    ?: PolicyConstants.ENFORCEMENT_UNPROTECTED,
-                deviceOwner = it.child("deviceOwner").getValue(Boolean::class.java) ?: false,
-                deviceAdmin = it.child("deviceAdmin").getValue(Boolean::class.java) ?: false,
-                deviceAdminSetupAvailable = it.child("deviceAdminSetupAvailable").getValue(Boolean::class.java) ?: true,
-                accessibility = it.child("accessibility").getValue(Boolean::class.java) ?: false,
-                usageAccess = it.child("usageAccess").getValue(Boolean::class.java) ?: false,
-                vpnPrepared = it.child("vpnPrepared").getValue(Boolean::class.java) ?: false,
-                vpnActive = it.child("vpnActive").getValue(Boolean::class.java) ?: false,
-                vpnBlockedCount = it.child("vpnBlockedCount").getValue(Long::class.java)?.toInt() ?: 0,
-                vpnLastError = it.child("vpnLastError").getValue(String::class.java),
-                backgroundUnrestricted = it.child("backgroundUnrestricted").getValue(Boolean::class.java) ?: false,
-                pinConfigured = it.child("pinConfigured").getValue(Boolean::class.java) ?: false,
-                protectionHealthy = it.child("protectionHealthy").getValue(Boolean::class.java) ?: false,
-                lastForegroundPackage = it.child("lastForegroundPackage").getValue(String::class.java),
-                lastSyncError = it.child("lastSyncError").getValue(String::class.java),
-                safeModeActive = it.child("safeModeActive").getValue(Boolean::class.java) ?: false,
-                safeModeUntil = it.child("safeModeUntil").getValue(Long::class.java),
-                activeModeId = it.child("activeModeId").getValue(String::class.java),
-                activeModeName = it.child("activeModeName").getValue(String::class.java)
-            )
-        }
-
-        registerDetailListener(database.child(FirebasePaths.deviceUnlockRequests(deviceId))) {
-            unlockRequests = it.children.mapNotNull { child ->
-                UnlockRequest(
-                    requestId = child.child("requestId").getValue(String::class.java) ?: child.key ?: return@mapNotNull null,
-                    packageName = child.child("packageName").getValue(String::class.java) ?: "",
-                    reason = child.child("reason").getValue(String::class.java) ?: "",
-                    status = child.child("status").getValue(String::class.java) ?: "",
-                    createdAt = child.child("createdAt").getValue(Long::class.java),
-                    expiresAt = child.child("expiresAt").getValue(Long::class.java),
-                    updatedAt = child.child("updatedAt").getValue(Long::class.java),
-                    approvalType = child.child("approvalType").getValue(String::class.java),
-                    approvalDurationMs = child.child("approvalDurationMs").getValue(Long::class.java)
-                )
-            }.sortedByDescending { request -> request.createdAt ?: 0L }
-        }
-
-        registerDetailListener(database.child(FirebasePaths.deviceTamperEvents(deviceId)).limitToLast(30)) {
-            tamperEvents = it.children.mapNotNull { child ->
-                TamperEvent(
-                    eventId = child.key ?: return@mapNotNull null,
-                    type = child.child("type").getValue(String::class.java) ?: "",
-                    message = child.child("message").getValue(String::class.java),
-                    createdAt = child.child("createdAt").getValue(Long::class.java)
-                )
-            }.sortedByDescending { event -> event.createdAt ?: 0L }
-        }
-    }
-
-    private fun registerDetailListener(query: Query, onData: (DataSnapshot) -> Unit) {
-        detailRegistrations += registerListener(query, onData)
-    }
-
-    private fun registerListener(query: Query, onData: (DataSnapshot) -> Unit): ListenerRegistration {
-        val listener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                onData(snapshot)
-            }
-
-            override fun onCancelled(error: DatabaseError) {
-                loadingDevices = false
-                loadingDeviceDetails = false
-                message = error.message
-            }
-        }
-        query.addValueEventListener(listener)
-        return ListenerRegistration(query, listener)
-    }
-
-    private fun clearAllListeners() {
-        deviceListRegistration?.let { it.query.removeEventListener(it.listener) }
-        deviceListRegistration = null
-        clearDeviceDetailListeners()
-    }
-
-    private fun clearDeviceDetailListeners() {
-        detailRegistrations.forEach { it.query.removeEventListener(it.listener) }
-        detailRegistrations.clear()
-        attachedDeviceDetailsFor = null
-    }
-
-    private fun createPairRequest(payload: String, manualDeviceId: String, manualCode: String) {
-        val repo = repository ?: run {
-            message = "Firebase database is not ready"
-            return
-        }
-        val parsed = parsePairPayload(payload)
-        val deviceId = parsed.first ?: manualDeviceId
-        val secret = parsed.second
-        if (deviceId.isBlank()) {
-            message = "Enter a TV device ID or paste the QR payload."
-            return
-        }
-        if (secret.isNullOrBlank() && manualCode.isBlank()) {
-            message = "Enter the 6-digit code or paste the QR payload."
-            return
-        }
-        repo.createPairRequest(
-            deviceId = deviceId,
-            secret = secret,
-            manualCode = manualCode,
-            onSuccess = { message = "Pair request sent" },
-            onError = { message = it }
-        )
-    }
-
-    private fun parsePairPayload(payload: String): Pair<String?, String?> {
-        if (payload.isBlank()) return null to null
-        return runCatching {
-            val uri = Uri.parse(payload)
-            uri.getQueryParameter("deviceId") to uri.getQueryParameter("secret")
-        }.getOrElse { null to null }
-    }
-
-    private fun updatePolicy(packageName: String, policy: ParentPolicy) {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV first"
-            return
-        }
-        val repo = repository ?: run {
-            message = "Firebase database is not ready"
-            return
-        }
-        val app = apps[packageName]
-        if (app?.blockable == false) {
-            message = "This app is protected: ${app.protectedReason ?: "not blockable"}"
-            return
-        }
-        if (policy.dailyLimitMinutes != null && policy.dailyLimitMinutes !in 1..1440) {
-            message = "Daily limit must be between 1 and 1440 minutes"
-            return
-        }
-        repo.updatePolicy(
-            deviceId = deviceId,
-            packageName = packageName,
-            policy = policy,
-            onSuccess = { message = "Policy updated" },
-            onError = { message = it }
-        )
-    }
-
-    private fun setPin(pin: String) {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV before setting a PIN"
-            return
-        }
-        val repo = repository ?: run {
-            message = "Firebase database is not ready"
-            return
-        }
-        if (!pin.matches(Regex("\\d{6}"))) {
-            message = "PIN must be 6 digits"
-            return
-        }
-        repo.setPin(
-            deviceId = deviceId,
-            pin = pin,
-            onSuccess = { message = "Parent PIN updated" },
-            onError = { message = it }
-        )
-    }
-
-    private fun updateUnlock(
-        request: UnlockRequest,
-        status: String,
-        approvalType: String? = null,
-        approvalDurationMs: Long? = null
-    ) {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV first"
-            return
-        }
-        val repo = repository ?: run {
-            message = "Firebase database is not ready"
-            return
-        }
-        if (status == PolicyConstants.UNLOCK_APPROVED &&
-            request.expiresAt != null &&
-            System.currentTimeMillis() > request.expiresAt
-        ) {
-            repo.updateUnlock(
-                deviceId = deviceId,
-                request = request,
-                status = PolicyConstants.UNLOCK_EXPIRED,
-                approvalType = null,
-                approvalDurationMs = null,
-                onSuccess = { message = "Unlock request expired" },
-                onError = { message = it }
-            )
-            return
-        }
-        repo.updateUnlock(
-            deviceId = deviceId,
-            request = request,
-            status = status,
-            approvalType = approvalType,
-            approvalDurationMs = approvalDurationMs,
-            onSuccess = {
-                message = when {
-                    status == PolicyConstants.UNLOCK_APPROVED && approvalType == PolicyConstants.UNLOCK_APPROVAL_TIMED ->
-                        "Unlock approved for ${(approvalDurationMs ?: 0L) / 60_000L} minutes"
-                    status == PolicyConstants.UNLOCK_APPROVED -> "Unlock approved for one visit"
-                    else -> "Unlock denied"
-                }
-            },
-            onError = { message = it }
-        )
-    }
-
-    private fun createMode(name: String) {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV first"
-            return
-        }
-        val trimmed = name.trim()
-        if (trimmed.isBlank()) {
-            message = "Mode name cannot be empty"
-            return
-        }
-        repository?.createMode(
-            deviceId = deviceId,
-            name = trimmed,
-            onSuccess = { message = "Mode created" },
-            onError = { message = it }
-        )
-    }
-
-    private fun renameMode(modeId: String, name: String) {
-        val deviceId = selectedDeviceId ?: return
-        val trimmed = name.trim()
-        if (trimmed.isBlank()) {
-            message = "Mode name cannot be empty"
-            return
-        }
-        repository?.updateModeName(
-            deviceId = deviceId,
-            modeId = modeId,
-            name = trimmed,
-            onSuccess = { message = "Mode renamed" },
-            onError = { message = it }
-        )
-    }
-
-    private fun deleteMode(modeId: String) {
-        val deviceId = selectedDeviceId ?: return
-        repository?.deleteMode(
-            deviceId = deviceId,
-            modeId = modeId,
-            onSuccess = { message = "Mode deleted" },
-            onError = { message = it }
-        )
-    }
-
-    private fun updateModePolicy(modeId: String, packageName: String, policy: ParentPolicy) {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV first"
-            return
-        }
-        val app = apps[packageName]
-        if (app?.blockable == false) {
-            message = "This app is protected: ${app.protectedReason ?: "not blockable"}"
-            return
-        }
-        if (policy.dailyLimitMinutes != null && policy.dailyLimitMinutes !in 1..1440) {
-            message = "Daily limit must be between 1 and 1440 minutes"
-            return
-        }
-        repository?.updateModePolicy(
-            deviceId = deviceId,
-            modeId = modeId,
-            packageName = packageName,
-            policy = policy,
-            onSuccess = { message = "Mode app policy updated" },
-            onError = { message = it }
-        )
-    }
-
-    private fun setActiveMode(mode: ParentMode?) {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV first"
-            return
-        }
-        repository?.setActiveMode(
-            deviceId = deviceId,
-            mode = mode,
-            onSuccess = { message = if (mode == null) "Mode disabled" else "Mode activated" },
-            onError = { message = it }
-        )
-    }
-
-    private fun startSafeMode(durationMinutes: Int) {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV first"
-            return
-        }
-        if (durationMinutes !in 1..1440) {
-            message = "Safe Mode duration must be between 1 and 1440 minutes"
-            return
-        }
-        repository?.startSafeMode(
-            deviceId = deviceId,
-            durationMinutes = durationMinutes,
-            onSuccess = { message = "Safe Mode started for $durationMinutes minutes" },
-            onError = { message = it }
-        )
-    }
-
-    private fun stopSafeMode() {
-        val deviceId = selectedDeviceId ?: run {
-            message = "Select a TV first"
-            return
-        }
-        repository?.stopSafeMode(
-            deviceId = deviceId,
-            onSuccess = { message = "Safe Mode deactivated" },
-            onError = { message = it }
-        )
-    }
-
-    private fun sendCommand(deviceId: String, type: String, packageName: String? = null) {
-        val repo = repository ?: run {
-            message = "Firebase database is not ready"
-            return
-        }
-        repo.sendCommand(
-            deviceId = deviceId,
-            type = type,
-            packageName = packageName,
-            onSuccess = { message = "Command sent" },
-            onError = { message = it }
-        )
-    }
-
-    private fun removePairedDevice(deviceId: String) {
-        val repo = repository ?: run {
-            message = "Firebase database is not ready"
-            return
-        }
-        repo.removePairedDevice(
-            deviceId = deviceId,
-            onSuccess = {
-                if (selectedDeviceId == deviceId) {
-                    selectedDeviceId = null
-                    clearDeviceDetailListeners()
-                    attachedDeviceDetailsFor = null
-                    apps = emptyMap()
-                    policies = emptyMap()
-                    states = emptyMap()
-                    modes = emptyList()
-                    activeMode = ActiveMode()
-                    safeMode = SafeModeState()
-                    security = SecurityRuntime()
-                    unlockRequests = emptyList()
-                    tamperEvents = emptyList()
-                }
-                message = "TV removed"
-            },
-            onError = { message = it }
-        )
     }
 
     private fun openExternalQrScanner() {
@@ -1193,6 +576,7 @@ private fun ParentDashboard(
     security: SecurityRuntime,
     unlockRequests: List<UnlockRequest>,
     tamperEvents: List<TamperEvent>,
+    syncState: ParentSyncUiState,
     loadingDeviceDetails: Boolean,
     onSignOut: () -> Unit,
     onSelectDevice: (String) -> Unit,
@@ -1212,6 +596,7 @@ private fun ParentDashboard(
     onRescan: () -> Unit,
     onOpenTvSetup: () -> Unit,
     onResetToday: (String) -> Unit,
+    onReconnect: () -> Unit,
     onScanQr: () -> Unit
 ) {
     var tab by remember { mutableIntStateOf(0) }
@@ -1258,6 +643,7 @@ private fun ParentDashboard(
                             true
                         ) { onRemoveDevice(deviceId) }
                     },
+                    syncState.pairRequest,
                     onPair,
                     onScanQr
                 )
@@ -1268,6 +654,7 @@ private fun ParentDashboard(
                     apps,
                     policies,
                     states,
+                    syncState.serverNow,
                     onUpdatePolicy,
                     onRescan,
                     { packageName ->
@@ -1290,6 +677,7 @@ private fun ParentDashboard(
                     safeMode,
                     security,
                     unlockRequests,
+                    syncState,
                     onSetPin,
                     onApproveUnlock,
                     onDenyUnlock,
@@ -1312,7 +700,8 @@ private fun ParentDashboard(
                     onStartSafeMode,
                     onStopSafeMode,
                     confirm,
-                    onOpenTvSetup
+                    onOpenTvSetup,
+                    onReconnect
                 )
                 3 -> EventsTab(tamperEvents)
             }
@@ -1338,6 +727,7 @@ private fun DevicesTab(
     selectedDeviceId: String?,
     onSelectDevice: (String) -> Unit,
     onRemoveDevice: (String) -> Unit,
+    pairRequest: PairRequestState?,
     onPair: (String, String, String) -> Unit,
     onScanQr: () -> Unit
 ) {
@@ -1359,6 +749,17 @@ private fun DevicesTab(
             GuardCard {
                 Text("Pair New TV", style = MaterialTheme.typography.titleLarge, color = GuardNavy, fontWeight = FontWeight.Bold)
                 Text("Scan the QR code displayed on your TV or enter details manually.", color = TextMuted, modifier = Modifier.padding(top = 8.dp))
+                pairRequest?.let { request ->
+                    StatusLabel(
+                        "Pairing ${request.status}",
+                        when (request.status) {
+                            PolicyConstants.PAIR_ACCEPTED -> SuccessGreen
+                            PolicyConstants.PAIR_PENDING -> ActionBlue
+                            else -> AlertRed
+                        },
+                        Modifier.padding(top = 12.dp)
+                    )
+                }
                 Button(
                     onClick = onScanQr,
                     colors = ButtonDefaults.buttonColors(containerColor = GuardNavy),
@@ -1511,6 +912,7 @@ private fun AppsTab(
     apps: Map<String, ParentApp>,
     policies: Map<String, ParentPolicy>,
     states: Map<String, ParentState>,
+    serverNow: Long,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
     onRescan: () -> Unit,
     onResetToday: (String) -> Unit
@@ -1572,7 +974,7 @@ private fun AppsTab(
         items(filtered) { app ->
             val policy = policies[app.packageName] ?: defaultParentPolicy(app.packageName)
             val state = states[app.packageName] ?: ParentState()
-            AppPolicyCard(app, policy, state, onUpdatePolicy, onResetToday)
+            AppPolicyCard(app, policy, state, serverNow, onUpdatePolicy, onResetToday)
         }
     }
 }
@@ -1582,9 +984,11 @@ private fun AppPolicyCard(
     app: ParentApp,
     policy: ParentPolicy,
     state: ParentState,
+    serverNow: Long,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
     onResetToday: (String) -> Unit
 ) {
+    val usageMs = effectiveUsageMs(state, serverNow)
     var limitText by remember(app.packageName, policy.dailyLimitMinutes) {
         mutableStateOf(policy.dailyLimitMinutes?.toString().orEmpty())
     }
@@ -1702,7 +1106,7 @@ private fun AppPolicyCard(
                 onCheckedChange = { allowed -> onUpdatePolicy(app.packageName, policy.copy(manualBlocked = !allowed)) }
             )
         }
-        if (state.usageMinutesToday > 0 || state.dailyLimitBlocked) {
+        if (usageMs > 0 || state.dailyLimitBlocked) {
             Row(
                 modifier = Modifier
                     .padding(start = 75.dp, top = 12.dp)
@@ -1713,7 +1117,7 @@ private fun AppPolicyCard(
             ) {
                 Icon(Icons.Outlined.Security, contentDescription = null, tint = if (state.dailyLimitBlocked) AlertRed else TextMuted)
                 Spacer(Modifier.width(8.dp))
-                Text("${state.usageMinutesToday} mins used today", color = if (state.dailyLimitBlocked) AlertRed else TextMuted)
+                Text("${formatUsage(usageMs)} used today", color = if (state.dailyLimitBlocked) AlertRed else TextMuted)
             }
         }
         if (expanded) {
@@ -1808,6 +1212,103 @@ private fun StatusLabel(label: String, color: Color, modifier: Modifier = Modifi
 }
 
 @Composable
+private fun SyncHealthCard(state: ParentSyncUiState, onReconnect: () -> Unit) {
+    val selectedDevice = state.devices.firstOrNull { it.deviceId == state.selectedDeviceId }
+    val protocolReady = state.syncRuntime.protocolVersion >= PolicyConstants.SYNC_PROTOCOL_VERSION
+    val tvConnected = if (protocolReady) state.syncRuntime.connected else selectedDevice?.online == true
+    val freshness = ControlProtocol.freshness(tvConnected, selectedDevice?.lastSeen, state.serverNow)
+    val desired = state.desiredRevision
+    val applied = state.appliedRevision
+    val syncStatus = when {
+        !state.phoneConnected -> ParentSyncStatus.SENDING
+        state.controlV2Exists && !protocolReady -> ParentSyncStatus.TV_UPDATE_REQUIRED
+        desired?.revisionId != null && applied.revisionId == desired.revisionId &&
+            applied.status == PolicyConstants.SYNC_STATUS_FAILED -> ParentSyncStatus.FAILED
+        desired?.revisionId != null && applied.revisionId != desired.revisionId &&
+            freshness == DeviceFreshness.OFFLINE -> ParentSyncStatus.OFFLINE_PENDING
+        desired?.revisionId != null && applied.revisionId != desired.revisionId &&
+            freshness == DeviceFreshness.DELAYED -> ParentSyncStatus.DELAYED
+        desired?.revisionId != null && applied.revisionId != desired.revisionId -> ParentSyncStatus.WAITING_FOR_TV
+        desired?.revisionId != null && applied.revisionId == desired.revisionId -> ParentSyncStatus.APPLIED
+        freshness == DeviceFreshness.DELAYED -> ParentSyncStatus.DELAYED
+        freshness == DeviceFreshness.OFFLINE -> ParentSyncStatus.IDLE
+        else -> ParentSyncStatus.IDLE
+    }
+    val statusText = if (!state.phoneConnected) {
+        if (desired?.revisionId != null && applied.revisionId != desired.revisionId) {
+            "Phone offline - writes queued"
+        } else {
+            "Phone offline"
+        }
+    } else when (syncStatus) {
+        ParentSyncStatus.SENDING -> "Phone offline - writes queued"
+        ParentSyncStatus.WAITING_FOR_TV -> "Waiting for TV"
+        ParentSyncStatus.APPLIED -> "Applied"
+        ParentSyncStatus.DELAYED -> "TV connection delayed"
+        ParentSyncStatus.OFFLINE_PENDING -> "TV offline - change pending"
+        ParentSyncStatus.FAILED -> "TV rejected latest change"
+        ParentSyncStatus.TV_UPDATE_REQUIRED -> "TV update required"
+        else -> when (freshness) {
+            DeviceFreshness.LIVE -> "Synchronized"
+            DeviceFreshness.DELAYED -> "TV connection delayed"
+            DeviceFreshness.OFFLINE -> "TV offline"
+        }
+    }
+    val healthy = state.phoneConnected && (syncStatus == ParentSyncStatus.APPLIED ||
+        (syncStatus == ParentSyncStatus.IDLE && freshness == DeviceFreshness.LIVE)
+    )
+    GuardCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Synchronization", style = MaterialTheme.typography.titleLarge, color = GuardNavy, fontWeight = FontWeight.Bold)
+                StatusLabel(
+                    statusText,
+                    when {
+                        healthy -> SuccessGreen
+                        syncStatus == ParentSyncStatus.WAITING_FOR_TV || syncStatus == ParentSyncStatus.DELAYED -> ActionBlue
+                        else -> AlertRed
+                    },
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+            IconButton(onClick = onReconnect) {
+                Icon(Icons.Outlined.Refresh, contentDescription = "Reconnect", tint = ActionBlue)
+            }
+        }
+        RuntimeRow("Phone Firebase", if (state.phoneConnected) "Connected" else "Offline", state.phoneConnected)
+        RuntimeRow(
+            "TV connection",
+            when (freshness) {
+                DeviceFreshness.LIVE -> "Live"
+                DeviceFreshness.DELAYED -> "Delayed"
+                DeviceFreshness.OFFLINE -> "Offline"
+            },
+            freshness == DeviceFreshness.LIVE
+        )
+        RuntimeRow("Sync protocol", if (protocolReady) "V2" else "Legacy", protocolReady)
+        state.syncRuntime.lastPolicyAppliedAt?.let {
+            RuntimeRow("Policy applied", formatTimestamp(it), true)
+        }
+        state.syncRuntime.lastUsageWriteAt?.let {
+            RuntimeRow("Usage updated", formatTimestamp(it), true)
+        }
+        state.syncRuntime.lastInventoryWriteAt?.let {
+            RuntimeRow("Inventory updated", formatTimestamp(it), true)
+        }
+        state.commands.firstOrNull()?.let { command ->
+            RuntimeRow(
+                "Latest command",
+                "${command.type}: ${command.status}",
+                command.status == PolicyConstants.COMMAND_DONE
+            )
+            command.error?.let { Text(it, color = AlertRed, modifier = Modifier.padding(top = 6.dp)) }
+        }
+        val error = applied.error ?: state.syncRuntime.lastError
+        error?.let { Text(it, color = AlertRed, modifier = Modifier.padding(top = 10.dp)) }
+    }
+}
+
+@Composable
 private fun SecurityTab(
     selectedDeviceId: String?,
     loadingDeviceDetails: Boolean,
@@ -1818,6 +1319,7 @@ private fun SecurityTab(
     safeMode: SafeModeState,
     security: SecurityRuntime,
     unlockRequests: List<UnlockRequest>,
+    syncState: ParentSyncUiState,
     onSetPin: (String) -> Unit,
     onApproveUnlock: (UnlockRequest, String, Long?) -> Unit,
     onDenyUnlock: (UnlockRequest) -> Unit,
@@ -1829,7 +1331,8 @@ private fun SecurityTab(
     onStartSafeMode: (Int) -> Unit,
     onStopSafeMode: () -> Unit,
     onConfirmAction: (String, String, String, Boolean, () -> Unit) -> Unit,
-    onOpenTvSetup: () -> Unit
+    onOpenTvSetup: () -> Unit,
+    onReconnect: () -> Unit
 ) {
     var pin by remember { mutableStateOf("") }
     var newModeName by remember { mutableStateOf("") }
@@ -1837,7 +1340,7 @@ private fun SecurityTab(
         mutableStateOf(modes.firstOrNull { it.modeId == activeMode.modeId }?.modeId)
     }
     var safeModeCustomMinutes by remember { mutableStateOf("") }
-    val safeModeActive = safeMode.isActive() || security.safeModeActive
+    val safeModeActive = safeMode.isActive(syncState.serverNow) || security.safeModeActive
     val safeModeUntil = safeMode.until ?: security.safeModeUntil
     LazyColumn(verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(18.dp)) {
         item {
@@ -1896,6 +1399,9 @@ private fun SecurityTab(
             }
         }
         item {
+            SyncHealthCard(syncState, onReconnect)
+        }
+        item {
             GuardCard {
                 Text("Emergency Safe Mode", style = MaterialTheme.typography.titleLarge, color = GuardNavy, fontWeight = FontWeight.Bold)
                 Text(
@@ -1933,7 +1439,7 @@ private fun SecurityTab(
                                 onClick = {
                                     onConfirmAction(
                                         "Start Safe Mode?",
-                                        "All TV PIN locks will pause for $minutes minutes, until ${formatTimestamp(System.currentTimeMillis() + minutes * 60_000L)}.",
+                                        "All TV PIN locks will pause for $minutes minutes, until ${formatTimestamp(syncState.serverNow + minutes * 60_000L)}.",
                                         "Start",
                                         true
                                     ) { onStartSafeMode(minutes) }
@@ -1959,7 +1465,7 @@ private fun SecurityTab(
                                 if (minutes != null && minutes in 1..1440) {
                                     onConfirmAction(
                                         "Start Safe Mode?",
-                                        "All TV PIN locks will pause for $minutes minutes, until ${formatTimestamp(System.currentTimeMillis() + minutes * 60_000L)}.",
+                                        "All TV PIN locks will pause for $minutes minutes, until ${formatTimestamp(syncState.serverNow + minutes * 60_000L)}.",
                                         "Start",
                                         true
                                     ) { onStartSafeMode(minutes) }
@@ -1980,6 +1486,7 @@ private fun SecurityTab(
             ModesCard(
                 apps = apps,
                 states = states,
+                serverNow = syncState.serverNow,
                 modes = modes,
                 activeMode = activeMode,
                 expandedModeId = expandedModeId,
@@ -2143,6 +1650,7 @@ private fun SecurityTab(
 private fun ModesCard(
     apps: Map<String, ParentApp>,
     states: Map<String, ParentState>,
+    serverNow: Long,
     modes: List<ParentMode>,
     activeMode: ActiveMode,
     expandedModeId: String?,
@@ -2185,6 +1693,7 @@ private fun ModesCard(
                 ModeSummaryRow(
                     apps = apps,
                     states = states,
+                    serverNow = serverNow,
                     mode = mode,
                     expanded = expandedModeId == mode.modeId,
                     active = activeMode.modeId == mode.modeId,
@@ -2203,6 +1712,7 @@ private fun ModesCard(
 private fun ModeSummaryRow(
     apps: Map<String, ParentApp>,
     states: Map<String, ParentState>,
+    serverNow: Long,
     mode: ParentMode,
     expanded: Boolean,
     active: Boolean,
@@ -2274,7 +1784,7 @@ private fun ModeSummaryRow(
                         modeId = mode.modeId,
                         app = app,
                         policy = mode.appPolicies[app.packageName] ?: ParentPolicy(),
-                        usageMinutesToday = modeUsageMinutes(app.packageName, states),
+                        usageMsToday = modeUsageMs(app.packageName, states, serverNow),
                         onUpdateModePolicy = onUpdateModePolicy
                     )
                 }
@@ -2287,7 +1797,7 @@ private fun ModeAppPolicyRow(
     modeId: String,
     app: ParentApp,
     policy: ParentPolicy,
-    usageMinutesToday: Long,
+    usageMsToday: Long,
     onUpdateModePolicy: (String, String, ParentPolicy) -> Unit
 ) {
     var limitText by remember(modeId, app.packageName, policy.dailyLimitMinutes) {
@@ -2301,10 +1811,10 @@ private fun ModeAppPolicyRow(
             .background(SurfaceLight)
             .padding(12.dp)
     ) {
-        val limitReached = policy.dailyLimitMinutes?.let { usageMinutesToday >= it } == true
+        val limitReached = policy.dailyLimitMinutes?.let { usageMsToday >= it * 60_000L } == true
         val usageLabel = policy.dailyLimitMinutes?.let { limit ->
-            "$usageMinutesToday / $limit mins used today"
-        } ?: "$usageMinutesToday mins used today"
+            "${formatUsage(usageMsToday)} / $limit mins used today"
+        } ?: "${formatUsage(usageMsToday)} used today"
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(app.label, color = GuardNavy, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2372,13 +1882,33 @@ private fun ModeAppPolicyRow(
     }
 }
 
-private fun modeUsageMinutes(packageName: String, states: Map<String, ParentState>): Long {
+private fun effectiveUsageMs(state: ParentState, serverNow: Long): Long {
+    if (!state.foregroundActive) return state.usageMsToday.coerceAtLeast(0L)
+    val capturedAt = state.usageCapturedAt ?: return state.usageMsToday.coerceAtLeast(0L)
+    val elapsed = (serverNow - capturedAt)
+        .coerceIn(0L, PolicyConstants.FOREGROUND_USAGE_EXTRAPOLATION_MAX_MS)
+    return (state.usageMsToday + elapsed).coerceAtLeast(0L)
+}
+
+private fun formatUsage(usageMs: Long): String {
+    val totalSeconds = usageMs.coerceAtLeast(0L) / 1_000L
+    val hours = totalSeconds / 3_600L
+    val minutes = (totalSeconds % 3_600L) / 60L
+    val seconds = totalSeconds % 60L
+    return when {
+        hours > 0L -> "${hours}h ${minutes}m"
+        minutes > 0L -> "${minutes}m ${seconds}s"
+        else -> "${seconds}s"
+    }
+}
+
+private fun modeUsageMs(packageName: String, states: Map<String, ParentState>, serverNow: Long): Long {
     if (packageName in PolicyConstants.settingsSectionLockPackages) {
         return PolicyConstants.primarySettingsPackages.maxOfOrNull { settingsPackage ->
-            states[settingsPackage]?.usageMinutesToday ?: 0L
+            states[settingsPackage]?.let { effectiveUsageMs(it, serverNow) } ?: 0L
         } ?: 0L
     }
-    return states[packageName]?.usageMinutesToday ?: 0L
+    return states[packageName]?.let { effectiveUsageMs(it, serverNow) } ?: 0L
 }
 
 @Composable

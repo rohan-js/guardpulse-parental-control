@@ -6,16 +6,11 @@ import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.database.FirebaseDatabase
-import com.google.firebase.database.ServerValue
-import com.guardpulse.parentcontrol.shared.DeviceIdentity
-import com.guardpulse.parentcontrol.shared.FirebaseBootstrap
-import com.guardpulse.parentcontrol.shared.FirebasePaths
 import com.guardpulse.parentcontrol.shared.PolicyConstants
 import com.guardpulse.parentcontrol.tv.policy.LocalPolicyStore
 import com.guardpulse.parentcontrol.tv.system.TvServiceStarter
 import com.guardpulse.parentcontrol.tv.sync.TvSyncService
+import com.guardpulse.parentcontrol.tv.sync.TamperEventQueue
 import com.guardpulse.parentcontrol.tv.usage.UsageTracker
 
 class AppMonitorAccessibilityService : AccessibilityService() {
@@ -38,7 +33,7 @@ class AppMonitorAccessibilityService : AccessibilityService() {
             key == "safeModeUntil" ||
             key == "activeModeId" ||
             key?.startsWith("dailyBlocks:") == true ||
-            key?.startsWith("usageOffsets:") == true
+            key?.startsWith("usageOffsets") == true
         ) {
             mainHandler.post { evaluateCurrentWindow() }
         }
@@ -135,14 +130,18 @@ class AppMonitorAccessibilityService : AccessibilityService() {
 
     private fun trackLiveForeground(packageName: String) {
         val usagePackage = usagePolicyPackage(packageName)
+        val current = fallbackStore.liveForegroundSession()
         if (usagePackage == null) {
-            fallbackStore.clearLiveForegroundSession()
+            if (current != null) {
+                fallbackStore.clearLiveForegroundSession()
+                runCatching { TvServiceStarter.start(this, TvSyncService.ACTION_FOREGROUND_CHANGED) }
+            }
             return
         }
-        val current = fallbackStore.liveForegroundSession()
         if (current?.packageName == usagePackage) return
         val baselineMs = usageTracker.rawUsageMillisToday()[usagePackage] ?: 0L
         fallbackStore.startLiveForegroundSession(usagePackage, baselineMs)
+        runCatching { TvServiceStarter.start(this, TvSyncService.ACTION_FOREGROUND_CHANGED) }
     }
 
     private fun enforceLiveDailyLimit(
@@ -161,10 +160,12 @@ class AppMonitorAccessibilityService : AccessibilityService() {
         if (usagePackage in dailyBlocks) return
 
         val limit = policies[usagePackage]?.dailyLimitMinutes ?: return
-        val usageOffset = localPolicyStore.loadUsageOffsets()[usagePackage] ?: 0L
-        val usedMinutes = ((usageTracker.usageMinutesToday(fallbackStore.liveForegroundSession())[usagePackage] ?: 0L) - usageOffset)
-            .coerceAtLeast(0L)
-        if (usedMinutes < limit) return
+        val usageOffsetMs = localPolicyStore.loadUsageOffsetsMs()[usagePackage] ?: 0L
+        val usedMs = (
+            (usageTracker.effectiveUsageMillisToday(fallbackStore.liveForegroundSession())[usagePackage] ?: 0L) -
+                usageOffsetMs
+            ).coerceAtLeast(0L)
+        if (usedMs < limit * 60_000L) return
 
         localPolicyStore.markDailyLimitBlocked(usagePackage)
         dailyBlocks.add(usagePackage)
@@ -207,27 +208,11 @@ class AppMonitorAccessibilityService : AccessibilityService() {
 
     private fun uploadRiskySettingsEvent(packageName: String) {
         if (!fallbackStore.shouldReportTamper(PolicyConstants.TAMPER_RISKY_SETTINGS_OPENED)) return
-        val status = FirebaseBootstrap.initialize(applicationContext)
-        if (!status.configured) return
-        val writeEvent = {
-            val deviceId = DeviceIdentity.getOrCreate(applicationContext)
-            FirebaseDatabase.getInstance().reference
-                .child(FirebasePaths.deviceTamperEvents(deviceId))
-                .push()
-                .setValue(
-                    mapOf(
-                        "type" to PolicyConstants.TAMPER_RISKY_SETTINGS_OPENED,
-                        "createdAt" to ServerValue.TIMESTAMP,
-                        "message" to "Protected settings opened: $packageName"
-                    )
-                )
-        }
-        val auth = FirebaseAuth.getInstance()
-        if (auth.currentUser == null) {
-            auth.signInAnonymously().addOnSuccessListener { writeEvent() }
-        } else {
-            writeEvent()
-        }
+        TamperEventQueue.enqueue(
+            applicationContext,
+            PolicyConstants.TAMPER_RISKY_SETTINGS_OPENED,
+            "Protected settings opened: $packageName"
+        )
     }
 
     override fun onInterrupt() = Unit

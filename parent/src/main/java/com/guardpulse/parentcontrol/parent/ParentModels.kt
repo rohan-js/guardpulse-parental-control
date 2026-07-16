@@ -1,6 +1,9 @@
 package com.guardpulse.parentcontrol.parent
 
 import com.guardpulse.parentcontrol.shared.PolicyConstants
+import com.guardpulse.parentcontrol.shared.SyncAppliedRevision
+import com.guardpulse.parentcontrol.shared.SyncDesiredRevision
+import com.guardpulse.parentcontrol.shared.SyncRuntimeState
 
 data class ParentDevice(
     val deviceId: String,
@@ -63,6 +66,11 @@ data class ParentState(
     val enforcementMode: String = PolicyConstants.ENFORCEMENT_UNPROTECTED,
     val blockReason: String? = null,
     val usageMinutesToday: Long = 0,
+    val usageMsToday: Long = 0,
+    val usageCapturedAt: Long? = null,
+    val foregroundActive: Boolean = false,
+    val foregroundStartedAt: Long? = null,
+    val updatedAt: Long? = null,
     val lastError: String? = null
 )
 
@@ -85,7 +93,8 @@ data class SecurityRuntime(
     val safeModeActive: Boolean = false,
     val safeModeUntil: Long? = null,
     val activeModeId: String? = null,
-    val activeModeName: String? = null
+    val activeModeName: String? = null,
+    val updatedAt: Long? = null
 )
 
 data class UnlockRequest(
@@ -97,7 +106,9 @@ data class UnlockRequest(
     val expiresAt: Long?,
     val updatedAt: Long? = null,
     val approvalType: String? = null,
-    val approvalDurationMs: Long? = null
+    val approvalDurationMs: Long? = null,
+    val tvApplyStatus: String? = null,
+    val tvAppliedAt: Long? = null
 )
 
 data class TamperEvent(
@@ -105,4 +116,64 @@ data class TamperEvent(
     val type: String,
     val message: String?,
     val createdAt: Long?
+)
+
+data class ParentCommand(
+    val commandId: String,
+    val type: String,
+    val packageName: String? = null,
+    val status: String = PolicyConstants.COMMAND_PENDING,
+    val createdAt: Long? = null,
+    val startedAt: Long? = null,
+    val completedAt: Long? = null,
+    val error: String? = null
+)
+
+data class PairRequestState(
+    val deviceId: String,
+    val requestId: String,
+    val status: String = PolicyConstants.COMMAND_PENDING,
+    val createdAt: Long? = null,
+    val expiresAt: Long? = null,
+    val error: String? = null
+)
+
+enum class ParentSyncStatus {
+    IDLE,
+    SENDING,
+    WAITING_FOR_TV,
+    APPLIED,
+    DELAYED,
+    OFFLINE_PENDING,
+    FAILED,
+    TV_UPDATE_REQUIRED
+}
+
+data class ParentSyncUiState(
+    val configured: Boolean = true,
+    val firebaseMessage: String? = null,
+    val signedIn: Boolean = false,
+    val authBusy: Boolean = false,
+    val phoneConnected: Boolean = false,
+    val serverNow: Long = System.currentTimeMillis(),
+    val devices: List<ParentDevice> = emptyList(),
+    val selectedDeviceId: String? = null,
+    val apps: Map<String, ParentApp> = emptyMap(),
+    val policies: Map<String, ParentPolicy> = emptyMap(),
+    val states: Map<String, ParentState> = emptyMap(),
+    val modes: List<ParentMode> = emptyList(),
+    val activeMode: ActiveMode = ActiveMode(),
+    val safeMode: SafeModeState = SafeModeState(),
+    val security: SecurityRuntime = SecurityRuntime(),
+    val unlockRequests: List<UnlockRequest> = emptyList(),
+    val tamperEvents: List<TamperEvent> = emptyList(),
+    val commands: List<ParentCommand> = emptyList(),
+    val pairRequest: PairRequestState? = null,
+    val desiredRevision: SyncDesiredRevision? = null,
+    val appliedRevision: SyncAppliedRevision = SyncAppliedRevision(),
+    val syncRuntime: SyncRuntimeState = SyncRuntimeState(),
+    val controlV2Exists: Boolean = false,
+    val loadingDevices: Boolean = false,
+    val loadingDeviceDetails: Boolean = false,
+    val message: String? = null
 )

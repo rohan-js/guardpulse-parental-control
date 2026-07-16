@@ -18,6 +18,22 @@ object FirebasePaths {
     fun devicePolicyModeApp(deviceId: String, modeId: String, packageName: String) =
         "devices/$deviceId/policy/modes/$modeId/apps/${PackageKeys.encode(packageName)}"
     fun devicePolicyActiveMode(deviceId: String) = "devices/$deviceId/policy/activeMode"
+    fun deviceControlV2(deviceId: String) = "devices/$deviceId/control/v2"
+    fun deviceControlV2Apps(deviceId: String) = "devices/$deviceId/control/v2/apps"
+    fun deviceControlV2App(deviceId: String, packageName: String) =
+        "devices/$deviceId/control/v2/apps/${PackageKeys.encode(packageName)}"
+    fun deviceControlV2Modes(deviceId: String) = "devices/$deviceId/control/v2/modes"
+    fun deviceControlV2Mode(deviceId: String, modeId: String) =
+        "devices/$deviceId/control/v2/modes/$modeId"
+    fun deviceControlV2ModeApp(deviceId: String, modeId: String, packageName: String) =
+        "devices/$deviceId/control/v2/modes/$modeId/apps/${PackageKeys.encode(packageName)}"
+    fun deviceControlV2ActiveMode(deviceId: String) = "devices/$deviceId/control/v2/activeMode"
+    fun deviceControlV2SafeMode(deviceId: String) = "devices/$deviceId/control/v2/safeMode"
+    fun deviceControlV2Pin(deviceId: String) = "devices/$deviceId/control/v2/pin"
+    fun deviceSync(deviceId: String) = "devices/$deviceId/sync"
+    fun deviceSyncDesired(deviceId: String) = "devices/$deviceId/sync/desired"
+    fun deviceSyncApplied(deviceId: String) = "devices/$deviceId/sync/applied"
+    fun deviceSyncRuntime(deviceId: String) = "devices/$deviceId/sync/runtime"
     fun deviceStateApps(deviceId: String) = "devices/$deviceId/state/apps"
     fun deviceStateApp(deviceId: String, packageName: String) =
         "devices/$deviceId/state/apps/${PackageKeys.encode(packageName)}"
@@ -32,4 +48,5 @@ object FirebasePaths {
     fun deviceUnlockRequest(deviceId: String, requestId: String) =
         "devices/$deviceId/unlockRequests/$requestId"
     fun pairRequests(deviceId: String) = "pairRequests/$deviceId"
+    fun pairRequest(deviceId: String, requestId: String) = "pairRequests/$deviceId/$requestId"
 }

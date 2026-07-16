@@ -30,6 +30,7 @@ import com.google.firebase.database.ValueEventListener
 import com.guardpulse.parentcontrol.shared.DeviceIdentity
 import com.guardpulse.parentcontrol.shared.FirebaseBootstrap
 import com.guardpulse.parentcontrol.shared.FirebasePaths
+import com.guardpulse.parentcontrol.shared.FirebaseServerClock
 import com.guardpulse.parentcontrol.shared.PinHasher
 import com.guardpulse.parentcontrol.shared.PolicyConstants
 import com.guardpulse.parentcontrol.tv.policy.LocalPolicyStore
@@ -37,6 +38,7 @@ import com.guardpulse.parentcontrol.tv.policy.LocalPolicyStore
 class LockActivity : Activity() {
     private lateinit var fallbackStore: FallbackStateStore
     private lateinit var localPolicyStore: LocalPolicyStore
+    private lateinit var serverClock: FirebaseServerClock
     private lateinit var packageNameToUnlock: String
     private lateinit var reason: String
     private var settingsSectionKey: String? = null
@@ -64,7 +66,7 @@ class LockActivity : Activity() {
             key == "safeModeUntil" ||
             key == "activeModeId" ||
             key?.startsWith("dailyBlocks:") == true ||
-            key?.startsWith("usageOffsets:") == true
+            key?.startsWith("usageOffsets") == true
         ) {
             mainHandler.post { finishIfNoLongerBlocked() }
         }
@@ -82,12 +84,20 @@ class LockActivity : Activity() {
         super.onCreate(savedInstanceState)
         fallbackStore = FallbackStateStore(this)
         localPolicyStore = LocalPolicyStore(this)
-        packageNameToUnlock = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: packageName
-        reason = intent.getStringExtra(EXTRA_REASON) ?: PolicyConstants.BLOCK_REASON_MANUAL
-        settingsSectionKey = intent.getStringExtra(EXTRA_SETTINGS_SECTION_KEY)
-        render()
+        serverClock = FirebaseServerClock()
+        serverClock.start()
+        bindLockIntent(intent)
         localPolicyStore.registerChangeListener(policyChangeListener)
         attachPolicyDismissListener()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        detachRemoteListeners()
+        bindLockIntent(intent)
+        attachPolicyDismissListener()
+        startAutoDismissChecks()
     }
 
     override fun onResume() {
@@ -105,6 +115,29 @@ class LockActivity : Activity() {
     }
 
     override fun onDestroy() {
+        detachRemoteListeners()
+        if (::localPolicyStore.isInitialized) {
+            localPolicyStore.unregisterChangeListener(policyChangeListener)
+        }
+        mainHandler.removeCallbacksAndMessages(null)
+        if (::serverClock.isInitialized) serverClock.stop()
+        super.onDestroy()
+    }
+
+    private fun bindLockIntent(lockIntent: Intent) {
+        packageNameToUnlock = lockIntent.getStringExtra(EXTRA_PACKAGE_NAME) ?: packageName
+        reason = lockIntent.getStringExtra(EXTRA_REASON) ?: PolicyConstants.BLOCK_REASON_MANUAL
+        settingsSectionKey = lockIntent.getStringExtra(EXTRA_SETTINGS_SECTION_KEY)
+        pin = ""
+        requestId = null
+        statusText = null
+        pinDotsView = null
+        remoteUnlockButton = null
+        keypadButtons.clear()
+        render()
+    }
+
+    private fun detachRemoteListeners() {
         unlockRequestListener?.let { listener ->
             unlockRequestRef?.removeEventListener(listener)
         }
@@ -115,11 +148,6 @@ class LockActivity : Activity() {
         }
         policyDismissListener = null
         policyDismissRef = null
-        if (::localPolicyStore.isInitialized) {
-            localPolicyStore.unregisterChangeListener(policyChangeListener)
-        }
-        mainHandler.removeCallbacksAndMessages(null)
-        super.onDestroy()
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -503,7 +531,8 @@ class LockActivity : Activity() {
                 "reason" to reason,
                 "status" to PolicyConstants.UNLOCK_PENDING,
                 "createdAt" to ServerValue.TIMESTAMP,
-                "expiresAt" to System.currentTimeMillis() + PolicyConstants.TEMP_UNLOCK_MS
+                "expiresAt" to serverClock.now() + PolicyConstants.TEMP_UNLOCK_MS,
+                "ttlMs" to PolicyConstants.TEMP_UNLOCK_MS
             )
         ).addOnSuccessListener {
             attachUnlockListener(ref)
@@ -521,7 +550,7 @@ class LockActivity : Activity() {
                 val expiresAt = snapshot.child("expiresAt").getValue(Long::class.java) ?: 0L
                 if (status == PolicyConstants.UNLOCK_PENDING &&
                     expiresAt > 0L &&
-                    System.currentTimeMillis() > expiresAt
+                    serverClock.now() > expiresAt
                 ) {
                     snapshot.ref.updateChildren(
                         mapOf(
@@ -537,6 +566,12 @@ class LockActivity : Activity() {
                         unlockRequestListener?.let { ref.removeEventListener(it) }
                         unlockRequestListener = null
                         grantApprovedUnlock(snapshot)
+                        snapshot.ref.updateChildren(
+                            mapOf(
+                                "tvApplyStatus" to PolicyConstants.SYNC_STATUS_APPLIED,
+                                "tvAppliedAt" to ServerValue.TIMESTAMP
+                            )
+                        )
                         finishAndReturnToUnlockedTarget()
                     }
                     PolicyConstants.UNLOCK_DENIED -> statusText?.text = "Parent denied unlock"

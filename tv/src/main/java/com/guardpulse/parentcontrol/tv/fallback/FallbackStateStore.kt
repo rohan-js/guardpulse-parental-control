@@ -153,7 +153,13 @@ class FallbackStateStore(context: Context) {
 
     fun safeModeUntil(): Long = prefs.getLong("safeModeUntil", 0L)
 
-    fun isSafeModeActive(): Boolean = safeModeUntil() > System.currentTimeMillis()
+    fun saveServerTimeOffset(offsetMs: Long) {
+        prefs.edit().putLong("serverTimeOffset", offsetMs).apply()
+    }
+
+    fun serverNow(): Long = System.currentTimeMillis() + prefs.getLong("serverTimeOffset", 0L)
+
+    fun isSafeModeActive(): Boolean = safeModeUntil() > serverNow()
 
     fun shouldReportTamper(type: String): Boolean {
         val key = "tamper:$type"
