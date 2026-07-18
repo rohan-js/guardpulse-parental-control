@@ -1337,7 +1337,10 @@ private fun SyncHealthCard(state: ParentSyncUiState, onReconnect: () -> Unit) {
             )
             command.error?.let { Text(it, color = AlertRed, modifier = Modifier.padding(top = 6.dp)) }
         }
-        val error = applied.error ?: state.syncRuntime.lastError
+        val currentRuntimeError = state.syncRuntime.lastError.takeIf {
+            (state.syncRuntime.lastErrorAt ?: 0L) >= (state.syncRuntime.lastSuccessAt ?: 0L)
+        }
+        val error = applied.error ?: currentRuntimeError
         error?.let { Text(it, color = AlertRed, modifier = Modifier.padding(top = 10.dp)) }
     }
 }

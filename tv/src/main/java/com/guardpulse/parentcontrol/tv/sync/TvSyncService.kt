@@ -1048,6 +1048,9 @@ class TvSyncService : Service() {
         }
         updates["${FirebasePaths.deviceSyncRuntime(deviceId)}/lastStateWriteAt"] = ServerValue.TIMESTAMP
         updates["${FirebasePaths.deviceSyncRuntime(deviceId)}/lastSuccessAt"] = ServerValue.TIMESTAMP
+        updates["${FirebasePaths.deviceSyncRuntime(deviceId)}/lastFailedChannel"] = null
+        updates["${FirebasePaths.deviceSyncRuntime(deviceId)}/lastError"] = null
+        updates["${FirebasePaths.deviceSyncRuntime(deviceId)}/lastErrorAt"] = null
         if (appliedRevision != null &&
             (applyGeneration == 0L || syncEngine?.isCurrent(applyGeneration, appliedRevision.revisionId) == true)
         ) {
