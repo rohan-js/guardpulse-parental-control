@@ -270,15 +270,19 @@ class LockActivity : Activity() {
 
         left.addView(lockButton("Ask Parent to Unlock").apply {
             setOnClickListener { createRemoteUnlockRequest() }
-            backgroundTintList = ColorStateList.valueOf(actionBlue)
+            backgroundTintList = ColorStateList.valueOf(guardNavy)
             setTextColor(Color.WHITE)
-            insetTop = 0
-            insetBottom = 0
-            setPadding(dp(24), 0, dp(24), 0)
+            val leftCornerRadius = dp(8).toFloat()
+            shapeAppearanceModel = shapeAppearanceModel.toBuilder()
+                .setTopLeftCornerSize(leftCornerRadius)
+                .setBottomLeftCornerSize(leftCornerRadius)
+                .setTopRightCornerSize(0f)
+                .setBottomRightCornerSize(0f)
+                .build()
             layoutParams = LinearLayout.LayoutParams(
-                minOf(dp(420), resources.displayMetrics.widthPixels / 3),
-                dp(58)
-            ).apply { setMargins(0, 0, 0, dp(12)) }
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(56)
+            ).apply { setMargins(0, 0, dp(24), dp(12)) }
             remoteUnlockButton = this
         })
 
@@ -287,12 +291,6 @@ class LockActivity : Activity() {
             gravity = Gravity.CENTER
             setTextColor(actionBlue)
             setPadding(0, dp(2), 0, dp(6))
-            minHeight = dp(34)
-            maxLines = 2
-            layoutParams = LinearLayout.LayoutParams(
-                minOf(dp(460), resources.displayMetrics.widthPixels / 3),
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
             isFocusable = false
         }
         left.addView(statusText)
@@ -532,7 +530,6 @@ class LockActivity : Activity() {
         val id = ref.key ?: return
         requestId = id
         unlockRequestRef = ref
-        remoteUnlockButton?.text = "Request Sent - Waiting"
         statusText?.text = "Waiting for parent approval..."
         ref.setValue(
             mapOf(
@@ -549,7 +546,6 @@ class LockActivity : Activity() {
         }.addOnFailureListener { error ->
             requestId = null
             unlockRequestRef = null
-            remoteUnlockButton?.text = "Ask Parent to Unlock"
             statusText?.text = error.message ?: "Could not request remote unlock"
         }
     }
@@ -569,7 +565,6 @@ class LockActivity : Activity() {
                             "updatedAt" to ServerValue.TIMESTAMP
                         )
                     )
-                    remoteUnlockButton?.text = "Request Expired"
                     statusText?.text = "Unlock request expired"
                     return
                 }
@@ -586,14 +581,8 @@ class LockActivity : Activity() {
                         )
                         finishAndReturnToUnlockedTarget()
                     }
-                    PolicyConstants.UNLOCK_DENIED -> {
-                        remoteUnlockButton?.text = "Request Denied"
-                        statusText?.text = "Parent denied unlock"
-                    }
-                    PolicyConstants.UNLOCK_EXPIRED -> {
-                        remoteUnlockButton?.text = "Request Expired"
-                        statusText?.text = "Unlock request expired"
-                    }
+                    PolicyConstants.UNLOCK_DENIED -> statusText?.text = "Parent denied unlock"
+                    PolicyConstants.UNLOCK_EXPIRED -> statusText?.text = "Unlock request expired"
                 }
             }
 
