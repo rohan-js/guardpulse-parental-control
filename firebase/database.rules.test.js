@@ -370,6 +370,7 @@ test("TV writes acknowledgements runtime diagnostics and precise usage only", as
       usageCapturedAt: 30,
       foregroundActive: true,
       foregroundStartedAt: 25,
+      controlRevisionId: "revision-1",
       updatedAt: 30,
     })
   );
@@ -385,6 +386,11 @@ test("TV writes acknowledgements runtime diagnostics and precise usage only", as
   await assertFails(
     dbAs("tvUid").ref("devices/tv1/state/apps/Y29tLnZpZGVv").update({
       usageMsToday: -1,
+    })
+  );
+  await assertFails(
+    dbAs("tvUid").ref("devices/tv1/state/apps/Y29tLnZpZGVv").update({
+      controlRevisionId: 123,
     })
   );
 });

@@ -1,6 +1,7 @@
 package com.guardpulse.parentcontrol.parent
 
 import com.guardpulse.parentcontrol.shared.PolicyConstants
+import com.guardpulse.parentcontrol.shared.ControlSnapshotV2
 import com.guardpulse.parentcontrol.shared.SyncAppliedRevision
 import com.guardpulse.parentcontrol.shared.SyncDesiredRevision
 import com.guardpulse.parentcontrol.shared.SyncRuntimeState
@@ -70,6 +71,7 @@ data class ParentState(
     val usageCapturedAt: Long? = null,
     val foregroundActive: Boolean = false,
     val foregroundStartedAt: Long? = null,
+    val controlRevisionId: String? = null,
     val updatedAt: Long? = null,
     val lastError: String? = null
 )
@@ -161,6 +163,7 @@ data class ParentSyncUiState(
     val apps: Map<String, ParentApp> = emptyMap(),
     val policies: Map<String, ParentPolicy> = emptyMap(),
     val states: Map<String, ParentState> = emptyMap(),
+    val confirmedStates: Map<String, ParentState> = emptyMap(),
     val modes: List<ParentMode> = emptyList(),
     val activeMode: ActiveMode = ActiveMode(),
     val safeMode: SafeModeState = SafeModeState(),
@@ -171,9 +174,48 @@ data class ParentSyncUiState(
     val pairRequest: PairRequestState? = null,
     val desiredRevision: SyncDesiredRevision? = null,
     val appliedRevision: SyncAppliedRevision = SyncAppliedRevision(),
+    val desiredControl: ControlSnapshotV2? = null,
+    val confirmedControl: ControlSnapshotV2? = null,
     val syncRuntime: SyncRuntimeState = SyncRuntimeState(),
     val controlV2Exists: Boolean = false,
     val loadingDevices: Boolean = false,
     val loadingDeviceDetails: Boolean = false,
     val message: String? = null
 )
+
+internal fun ControlSnapshotV2.toParentPolicies(): Map<String, ParentPolicy> =
+    apps.mapValues { (_, rule) -> ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes) }
+
+internal fun ControlSnapshotV2.toParentModes(): List<ParentMode> = modes.values.map { mode ->
+    ParentMode(
+        modeId = mode.modeId,
+        name = mode.name,
+        appPolicies = mode.apps.mapValues { (_, rule) ->
+            ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes)
+        },
+        createdAt = mode.createdAt,
+        updatedAt = mode.updatedAt
+    )
+}.sortedBy { it.name.lowercase() }
+
+internal fun ControlSnapshotV2.toParentActiveMode(): ActiveMode = ActiveMode(
+    modeId = activeMode?.modeId,
+    modeName = activeMode?.modeName ?: activeMode?.modeId?.let { modes[it]?.name },
+    activatedAt = activeMode?.activatedAt
+)
+
+internal fun ControlSnapshotV2.toParentSafeMode(): SafeModeState = SafeModeState(
+    enabled = safeMode.enabled,
+    until = safeMode.until,
+    startedAt = safeMode.startedAt,
+    startedBy = safeMode.startedBy
+)
+
+internal fun ParentSyncUiState.isAppPolicyPending(packageName: String): Boolean {
+    val desired = desiredControl ?: return false
+    val confirmed = confirmedControl ?: return false
+    val desiredRule = desired.apps[packageName]
+    val confirmedRule = confirmed.apps[packageName]
+    return desiredRule?.manualBlocked != confirmedRule?.manualBlocked ||
+        desiredRule?.dailyLimitMinutes != confirmedRule?.dailyLimitMinutes
+}

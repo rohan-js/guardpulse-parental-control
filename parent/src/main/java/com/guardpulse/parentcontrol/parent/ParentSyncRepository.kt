@@ -9,6 +9,7 @@ import com.google.firebase.database.Query
 import com.google.firebase.database.ValueEventListener
 import com.guardpulse.parentcontrol.shared.ControlPin
 import com.guardpulse.parentcontrol.shared.ControlProtocol
+import com.guardpulse.parentcontrol.shared.ControlSnapshotV2
 import com.guardpulse.parentcontrol.shared.FirebasePaths
 import com.guardpulse.parentcontrol.shared.PackageKeys
 import com.guardpulse.parentcontrol.shared.PolicyConstants
@@ -31,7 +32,7 @@ class ParentSyncRepository(private val database: DatabaseReference) {
         fun onDesiredRevision(snapshot: DataSnapshot)
         fun onAppliedRevision(value: SyncAppliedRevision)
         fun onSyncRuntime(value: SyncRuntimeState)
-        fun onControlV2Exists(exists: Boolean)
+        fun onControlV2(exists: Boolean, value: ControlSnapshotV2?)
         fun onError(message: String)
     }
 
@@ -293,7 +294,16 @@ class ParentSyncRepository(private val database: DatabaseReference) {
             observer.onSyncRuntime(snapshot.syncRuntime())
         }
         observe(FirebasePaths.deviceControlV2(deviceId), observer) { snapshot ->
-            observer.onControlV2Exists(snapshot.exists())
+            if (!snapshot.exists()) {
+                observer.onControlV2(false, null)
+            } else {
+                ControlProtocol.parse(snapshot)
+                    .onSuccess { observer.onControlV2(true, it) }
+                    .onFailure { error ->
+                        observer.onControlV2(true, null)
+                        observer.onError(error.message ?: "Invalid synchronized TV control")
+                    }
+            }
         }
     }
 
@@ -399,6 +409,7 @@ class ParentSyncRepository(private val database: DatabaseReference) {
         usageCapturedAt = child("usageCapturedAt").getValue(Long::class.java),
         foregroundActive = child("foregroundActive").getValue(Boolean::class.java) ?: false,
         foregroundStartedAt = child("foregroundStartedAt").getValue(Long::class.java),
+        controlRevisionId = child("controlRevisionId").getValue(String::class.java),
         updatedAt = child("updatedAt").getValue(Long::class.java),
         lastError = child("lastError").getValue(String::class.java)
     )

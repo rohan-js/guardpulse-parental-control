@@ -654,6 +654,8 @@ private fun ParentDashboard(
                     apps,
                     policies,
                     states,
+                    syncState.confirmedStates,
+                    syncState,
                     syncState.serverNow,
                     onUpdatePolicy,
                     onRescan,
@@ -912,6 +914,8 @@ private fun AppsTab(
     apps: Map<String, ParentApp>,
     policies: Map<String, ParentPolicy>,
     states: Map<String, ParentState>,
+    confirmedStates: Map<String, ParentState>,
+    syncState: ParentSyncUiState,
     serverNow: Long,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
     onRescan: () -> Unit,
@@ -973,8 +977,27 @@ private fun AppsTab(
         }
         items(filtered) { app ->
             val policy = policies[app.packageName] ?: defaultParentPolicy(app.packageName)
-            val state = states[app.packageName] ?: ParentState()
-            AppPolicyCard(app, policy, state, serverNow, onUpdatePolicy, onResetToday)
+            val liveState = states[app.packageName] ?: ParentState()
+            val confirmedState = if (syncState.confirmedControl == null) {
+                liveState
+            } else {
+                confirmedStates[app.packageName] ?: ParentState()
+            }
+            val pending = syncState.isAppPolicyPending(app.packageName)
+            val requestedPolicy = syncState.desiredControl?.apps?.get(app.packageName)?.let { rule ->
+                ParentPolicy(rule.manualBlocked, rule.dailyLimitMinutes)
+            }
+            AppPolicyCard(
+                app,
+                policy,
+                confirmedState,
+                liveState,
+                pending,
+                requestedPolicy,
+                serverNow,
+                onUpdatePolicy,
+                onResetToday
+            )
         }
     }
 }
@@ -984,11 +1007,14 @@ private fun AppPolicyCard(
     app: ParentApp,
     policy: ParentPolicy,
     state: ParentState,
+    usageState: ParentState,
+    pending: Boolean,
+    requestedPolicy: ParentPolicy?,
     serverNow: Long,
     onUpdatePolicy: (String, ParentPolicy) -> Unit,
     onResetToday: (String) -> Unit
 ) {
-    val usageMs = effectiveUsageMs(state, serverNow)
+    val usageMs = effectiveUsageMs(usageState, serverNow)
     var limitText by remember(app.packageName, policy.dailyLimitMinutes) {
         mutableStateOf(policy.dailyLimitMinutes?.toString().orEmpty())
     }
@@ -1000,14 +1026,19 @@ private fun AppPolicyCard(
     val settingsSectionName = settingsSection?.shortLabel ?: "Settings section"
     val lockControlled = app.blockable
     val networkBlocked = false
-    val lockBlocked = state.lockBlocked ||
+    val runtimeConfirmed = state.controlRevisionId != null
+    val lockBlocked = if (runtimeConfirmed) {
+        state.lockBlocked || (!app.blockable && state.fallbackLocked)
+    } else {
         (lockControlled && (policy.manualBlocked || state.manualBlocked || state.dailyLimitBlocked)) ||
-        (!app.blockable && state.fallbackLocked)
+            (!app.blockable && state.fallbackLocked)
+    }
     val sourceLocked = sourceApp && lockBlocked
     val settingsLocked = settingsApp && lockBlocked
     val settingsSectionsLocked = settingsSectionApp && lockBlocked
     val blocked = networkBlocked || lockBlocked
     val statusLabel = when {
+        pending -> "Waiting for TV"
         !app.blockable -> "Protected"
         sourceLocked -> "Live TV locked"
         settingsSectionsLocked -> "$settingsSectionName locked"
@@ -1020,6 +1051,7 @@ private fun AppPolicyCard(
         else -> "App allowed"
     }
     val statusColor = when {
+        pending -> ActionBlue
         !app.blockable -> OutlineSoft
         blocked -> AlertRed
         else -> ActionBlue
@@ -1072,6 +1104,8 @@ private fun AppPolicyCard(
                     modifier = Modifier.padding(top = 4.dp)
                 )
                 val reason = when {
+                    pending && requestedPolicy?.manualBlocked == true -> "Lock requested; TV confirmation pending"
+                    pending -> "Unlock or limit change requested; TV confirmation pending"
                     !app.blockable -> "Reason: ${app.protectedReason ?: "System critical"}"
                     sourceLocked && state.dailyLimitBlocked -> "Daily limit source lock"
                     sourceLocked && policy.manualBlocked -> "Live TV source locked by parent"
@@ -1101,7 +1135,7 @@ private fun AppPolicyCard(
                 }
             }
             Switch(
-                enabled = app.blockable,
+                enabled = app.blockable && !pending,
                 checked = !policy.manualBlocked,
                 onCheckedChange = { allowed -> onUpdatePolicy(app.packageName, policy.copy(manualBlocked = !allowed)) }
             )
@@ -1173,21 +1207,21 @@ private fun AppPolicyCard(
                         { limitText = it.filter(Char::isDigit).take(4) },
                         label = { Text("Daily Limit") },
                         suffix = { Text("min") },
-                        enabled = app.blockable,
+                        enabled = app.blockable && !pending,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(Modifier.width(10.dp))
-                    Button(enabled = app.blockable, onClick = {
+                    Button(enabled = app.blockable && !pending, onClick = {
                         onUpdatePolicy(app.packageName, policy.copy(dailyLimitMinutes = limitText.toIntOrNull()?.takeIf { it > 0 }))
                     }, colors = ButtonDefaults.buttonColors(containerColor = GuardNavy)) { Text("Save") }
                     Spacer(Modifier.width(8.dp))
-                    OutlinedButton(enabled = app.blockable && policy.dailyLimitMinutes != null, onClick = {
+                    OutlinedButton(enabled = app.blockable && !pending && policy.dailyLimitMinutes != null, onClick = {
                         limitText = ""
                         onUpdatePolicy(app.packageName, policy.copy(dailyLimitMinutes = null))
                     }) { Text("Clear") }
                 }
-                TextButton(enabled = app.blockable, onClick = { onResetToday(app.packageName) }) { Text("Reset today") }
+                TextButton(enabled = app.blockable && !pending, onClick = { onResetToday(app.packageName) }) { Text("Reset today") }
                 state.lastError?.let { Text("Error: $it", color = AlertRed) }
             }
         }
@@ -1340,8 +1374,8 @@ private fun SecurityTab(
         mutableStateOf(modes.firstOrNull { it.modeId == activeMode.modeId }?.modeId)
     }
     var safeModeCustomMinutes by remember { mutableStateOf("") }
-    val safeModeActive = safeMode.isActive(syncState.serverNow) || security.safeModeActive
-    val safeModeUntil = safeMode.until ?: security.safeModeUntil
+    val safeModeActive = safeMode.isActive(syncState.serverNow)
+    val safeModeUntil = safeMode.until
     LazyColumn(verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(18.dp)) {
         item {
             Text("Security Settings", style = MaterialTheme.typography.headlineSmall, color = GuardNavy, fontWeight = FontWeight.Bold)
@@ -1377,7 +1411,7 @@ private fun SecurityTab(
                 )
                 RuntimeRow("PIN", if (security.pinConfigured) "Configured" else "Missing", security.pinConfigured)
                 RuntimeRow("Healthy", if (security.protectionHealthy) "Healthy" else "Needs setup", security.protectionHealthy)
-                RuntimeRow("Active Mode", activeMode.modeName ?: security.activeModeName ?: "Normal policy", activeMode.modeId != null || security.activeModeId != null)
+                RuntimeRow("Active Mode", activeMode.modeName ?: "Normal policy", activeMode.modeId != null)
                 RuntimeRow(
                     "Safe Mode",
                     if (safeModeActive) "Active until ${formatTimestamp(safeModeUntil)}" else "Off",

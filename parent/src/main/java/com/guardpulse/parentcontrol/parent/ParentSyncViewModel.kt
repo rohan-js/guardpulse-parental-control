@@ -9,6 +9,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
 import com.guardpulse.parentcontrol.shared.ControlPin
 import com.guardpulse.parentcontrol.shared.ControlProtocol
+import com.guardpulse.parentcontrol.shared.ControlSnapshotV2
 import com.guardpulse.parentcontrol.shared.FirebaseRuntime
 import com.guardpulse.parentcontrol.shared.FirebaseServerClock
 import com.guardpulse.parentcontrol.shared.PolicyConstants
@@ -43,6 +44,11 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
     private var legacyPinLoaded = false
     private var controlExistenceLoaded = false
     private var legacyPin: ControlPin? = null
+    private var legacyPolicies: Map<String, ParentPolicy> = emptyMap()
+    private var legacyModes: List<ParentMode> = emptyList()
+    private var legacyActiveMode: ActiveMode = ActiveMode()
+    private var legacySafeMode: SafeModeState = SafeModeState()
+    private var latestRuntimeStates: Map<String, ParentState> = emptyMap()
     private var migrationRequested = false
     private var pendingPairDeviceId: String? = selectionPrefs.getString("pendingPairDeviceId", null)
     private var pendingPairRequestId: String? = selectionPrefs.getString("pendingPairRequestId", null)
@@ -318,25 +324,37 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
 
             override fun onPolicies(value: Map<String, ParentPolicy>) {
                 legacyPoliciesLoaded = true
-                setState { it.copy(policies = value) }
+                legacyPolicies = value
+                setState { current ->
+                    if (current.confirmedControl == null) current.copy(policies = value) else current
+                }
                 maybeSeedControlV2()
             }
 
             override fun onModes(value: List<ParentMode>) {
                 legacyModesLoaded = true
-                setState { it.copy(modes = value) }
+                legacyModes = value
+                setState { current ->
+                    if (current.confirmedControl == null) current.copy(modes = value) else current
+                }
                 maybeSeedControlV2()
             }
 
             override fun onActiveMode(value: ActiveMode) {
                 legacyActiveModeLoaded = true
-                setState { it.copy(activeMode = value) }
+                legacyActiveMode = value
+                setState { current ->
+                    if (current.confirmedControl == null) current.copy(activeMode = value) else current
+                }
                 maybeSeedControlV2()
             }
 
             override fun onSafeMode(value: SafeModeState) {
                 legacySafeModeLoaded = true
-                setState { it.copy(safeMode = value) }
+                legacySafeMode = value
+                setState { current ->
+                    if (current.confirmedControl == null) current.copy(safeMode = value) else current
+                }
                 maybeSeedControlV2()
             }
 
@@ -346,7 +364,11 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 maybeSeedControlV2()
             }
 
-            override fun onStates(value: Map<String, ParentState>) = setState { it.copy(states = value) }
+            override fun onStates(value: Map<String, ParentState>) {
+                latestRuntimeStates = value
+                setState { it.copy(states = value) }
+                promoteConfirmedRuntimeStates()
+            }
             override fun onSecurity(value: SecurityRuntime) = setState { it.copy(security = value) }
             override fun onUnlockRequests(value: List<UnlockRequest>) = setState { it.copy(unlockRequests = value) }
             override fun onTamperEvents(value: List<TamperEvent>) = setState { it.copy(tamperEvents = value) }
@@ -358,18 +380,20 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
 
             override fun onAppliedRevision(value: com.guardpulse.parentcontrol.shared.SyncAppliedRevision) {
                 setState { it.copy(appliedRevision = value) }
+                promoteConfirmedControl()
             }
 
             override fun onSyncRuntime(value: com.guardpulse.parentcontrol.shared.SyncRuntimeState) {
                 setState { it.copy(syncRuntime = value) }
             }
 
-            override fun onControlV2Exists(exists: Boolean) {
+            override fun onControlV2(exists: Boolean, value: ControlSnapshotV2?) {
                 controlExistenceLoaded = true
-                setState { it.copy(controlV2Exists = exists) }
+                setState { it.copy(controlV2Exists = exists, desiredControl = value) }
                 if (exists) {
                     migrationRequested = true
                     flushPendingControlActions()
+                    promoteConfirmedControl()
                 } else {
                     maybeSeedControlV2()
                 }
@@ -389,10 +413,10 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
         migrationRequested = true
         writer?.seedControlV2(
             deviceId,
-            current.policies,
-            current.modes,
-            current.activeMode,
-            current.safeMode,
+            legacyPolicies,
+            legacyModes,
+            legacyActiveMode,
+            legacySafeMode,
             legacyPin,
             onSuccess = { setMessage("TV controls upgraded; waiting for TV acknowledgement") },
             onError = {
@@ -410,6 +434,11 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
         legacyPinLoaded = false
         controlExistenceLoaded = false
         legacyPin = null
+        legacyPolicies = emptyMap()
+        legacyModes = emptyList()
+        legacyActiveMode = ActiveMode()
+        legacySafeMode = SafeModeState()
+        latestRuntimeStates = emptyMap()
         migrationRequested = false
         pendingControlActions.clear()
         setState {
@@ -418,6 +447,7 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 apps = emptyMap(),
                 policies = emptyMap(),
                 states = emptyMap(),
+                confirmedStates = emptyMap(),
                 modes = emptyList(),
                 activeMode = ActiveMode(),
                 safeMode = SafeModeState(),
@@ -427,6 +457,8 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 commands = emptyList(),
                 desiredRevision = null,
                 appliedRevision = com.guardpulse.parentcontrol.shared.SyncAppliedRevision(),
+                desiredControl = null,
+                confirmedControl = null,
                 syncRuntime = com.guardpulse.parentcontrol.shared.SyncRuntimeState(),
                 controlV2Exists = false,
                 loadingDeviceDetails = true
@@ -444,6 +476,7 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 apps = emptyMap(),
                 policies = emptyMap(),
                 states = emptyMap(),
+                confirmedStates = emptyMap(),
                 modes = emptyList(),
                 activeMode = ActiveMode(),
                 safeMode = SafeModeState(),
@@ -453,6 +486,8 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
                 commands = emptyList(),
                 desiredRevision = null,
                 appliedRevision = com.guardpulse.parentcontrol.shared.SyncAppliedRevision(),
+                desiredControl = null,
+                confirmedControl = null,
                 syncRuntime = com.guardpulse.parentcontrol.shared.SyncRuntimeState(),
                 controlV2Exists = false,
                 loadingDeviceDetails = false
@@ -546,6 +581,40 @@ class ParentSyncViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun controlSent() = setMessage("Sent to TV; waiting for acknowledgement")
+
+    private fun promoteConfirmedControl() {
+        val current = state.value
+        val desired = current.desiredControl ?: return
+        val applied = current.appliedRevision
+        if (applied.revisionId != desired.revisionId ||
+            applied.status != PolicyConstants.SYNC_STATUS_APPLIED
+        ) return
+        setState {
+            it.copy(
+                confirmedControl = desired,
+                policies = desired.toParentPolicies(),
+                modes = desired.toParentModes(),
+                activeMode = desired.toParentActiveMode(),
+                safeMode = desired.toParentSafeMode(),
+                confirmedStates = matchingRuntimeStates(
+                    desired.revisionId,
+                    latestRuntimeStates
+                )
+            )
+        }
+    }
+
+    private fun promoteConfirmedRuntimeStates() {
+        val confirmedRevision = state.value.confirmedControl?.revisionId ?: return
+        val matching = matchingRuntimeStates(confirmedRevision, latestRuntimeStates)
+        if (matching.isEmpty()) return
+        setState { it.copy(confirmedStates = matching) }
+    }
+
+    private fun matchingRuntimeStates(
+        revisionId: String,
+        runtimeStates: Map<String, ParentState>
+    ): Map<String, ParentState> = runtimeStates.filterValues { it.controlRevisionId == revisionId }
 
     private fun runWhenControlReady(action: () -> Unit) {
         if (state.value.controlV2Exists) {

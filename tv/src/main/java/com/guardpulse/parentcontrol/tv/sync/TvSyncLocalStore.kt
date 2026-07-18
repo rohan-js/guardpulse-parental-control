@@ -17,6 +17,12 @@ class TvSyncLocalStore(context: Context) {
 
     fun lastV2Revision(): String? = prefs.getString("lastV2Revision", null)
 
+    fun saveAppliedV2Revision(revisionId: String) {
+        prefs.edit().putString("lastAppliedV2Revision", revisionId).apply()
+    }
+
+    fun lastAppliedV2Revision(): String? = prefs.getString("lastAppliedV2Revision", null)
+
     fun savePendingAppliedRevision(revisionId: String?) {
         prefs.edit().putString("pendingAppliedRevision", revisionId).apply()
     }

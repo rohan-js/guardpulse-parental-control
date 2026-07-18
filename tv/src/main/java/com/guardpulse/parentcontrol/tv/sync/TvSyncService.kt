@@ -932,6 +932,7 @@ class TvSyncService : Service() {
         val decisionsByPackage = mutableMapOf<String, com.guardpulse.parentcontrol.shared.PolicyDecision>()
         val usageMsByPackage = mutableMapOf<String, Long>()
         val networkBlockedPackages = emptySet<String>()
+        val controlRevisionId = appliedRevision?.revisionId ?: syncLocalStore.lastAppliedV2Revision()
 
         apps.forEach { app ->
             val policy = effectivePolicy(app.packageName, policies)
@@ -1025,6 +1026,7 @@ class TvSyncService : Service() {
                 "foregroundStartedAt" to liveSession
                     ?.takeIf { it.packageName == app.packageName }
                     ?.let { serverClock.now() - (System.currentTimeMillis() - it.startedAt).coerceAtLeast(0L) },
+                "controlRevisionId" to controlRevisionId,
                 "dailyLimitMinutes" to limit,
                 "blockable" to app.blockable,
                 "lastError" to lastError,
@@ -1062,6 +1064,7 @@ class TvSyncService : Service() {
                 if (appliedRevision != null &&
                     (applyGeneration == 0L || syncEngine?.isCurrent(applyGeneration, appliedRevision.revisionId) == true)
                 ) {
+                    syncLocalStore.saveAppliedV2Revision(appliedRevision.revisionId)
                     syncLocalStore.savePendingAppliedRevision(null)
                 }
                 clearSyncError()
