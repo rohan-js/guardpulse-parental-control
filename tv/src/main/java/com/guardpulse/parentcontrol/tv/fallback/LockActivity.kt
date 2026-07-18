@@ -272,13 +272,6 @@ class LockActivity : Activity() {
             setOnClickListener { createRemoteUnlockRequest() }
             backgroundTintList = ColorStateList.valueOf(guardNavy)
             setTextColor(Color.WHITE)
-            val leftCornerRadius = dp(8).toFloat()
-            shapeAppearanceModel = shapeAppearanceModel.toBuilder()
-                .setTopLeftCornerSize(leftCornerRadius)
-                .setBottomLeftCornerSize(leftCornerRadius)
-                .setTopRightCornerSize(0f)
-                .setBottomRightCornerSize(0f)
-                .build()
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(56)
